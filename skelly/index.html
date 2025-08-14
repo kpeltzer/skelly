@@ -231,7 +231,7 @@
           <input id="payload" placeholder="payload hex (optional)" />
         </div>
         <div class="actions"><button class="btn" id="btnSendRaw">Send</button></div>
-        <div class="small muted" style="margin-top:6px">Payload auto-pads to <strong>20 hex chars (10 bytes)</strong> before CRC8 (poly 0x8C).</div>
+        <div class="small muted" style="margin-top:6px">Payload auto-pads to <strong>16 hex chars (8 bytes)</strong> before CRC8 (poly 0x8C).</div>
       </div>
       
     </section>
@@ -291,9 +291,9 @@
 
       <div class="spacer"></div>
       <div>
-        <label>Volume (0–255)</label>
+        <label>Volume (100)</label>
         <div class="row">
-          <input id="vol" type="number" min="0" max="255" value="128" />
+          <input id="vol" type="number" min="0" max="100" value="50" />
           <button class="btn" id="btnSetVol">Set</button>
         </div>
       </div>
@@ -407,9 +407,9 @@
   const ADV_KEYS = { raw:'skelly_adv_raw', ft:'skelly_adv_ft', fedc:'skelly_adv_fedc' };
 
   // --- Padding defaults (bytes) ---
-  const PAD_DEFAULT = 10;
-  const PAD_QUERY   = 10;
-  const PAD_MEDIA   = 10;
+  const PAD_DEFAULT = 8;
+  const PAD_QUERY   = 8;
+  const PAD_MEDIA   = 8;
 
   // --- UI helpers ---
   const $ = sel => document.querySelector(sel);
@@ -1041,7 +1041,7 @@ async function sendFileToDevice(u8, name) {
     const cluster = intToHex(0, 4);
     const nameLen = '00';
     const payload = ch + brightness + cluster + nameLen; // 7 bytes → pad to 10
-    send(buildCmd('F3', payload, 10));
+    send(buildCmd('F3', payload, PAD_MEDIA));
   });
 
   // color picker sync
@@ -1105,12 +1105,19 @@ async function sendFileToDevice(u8, name) {
 
   document.querySelector('#apSetEye')?.addEventListener('click', () => {
     if (!isConnected()) return log('Not connected','warn');
-    const cluster = (Math.max(0, Math.min(0xFFFF, parseInt(document.querySelector('#apCluster').value || '0', 10))) & 0xFFFF);
+    const cluster = Math.max(0, parseInt(document.querySelector('#apCluster').value || '0', 10)) >>> 0;
     const name = (document.querySelector('#apName').value || '').trim();
-    const nameHex = utf16leHex(name);
-    const payload = intToHex(apEye,1) + '000000' + intToHex(cluster,2) + (name ? ('5C55' + nameHex) : '');
-    send(buildCmd('F9', payload));
+    let payload = intToHex(apEye,1) + '00' + intToHex(cluster,4);
+    if (name) {
+      const nameHex = utf16leHex(name);
+      const nameLen = intToHex((nameHex.length/2) + 2, 1);
+      payload += nameLen + '5C55' + nameHex;
+    } else {
+      payload += '00';
+    }
+    send(buildCmd('F9', payload, PAD_DEFAULT));
     log(`Set Eye (F9) icon=${apEye} cluster=${cluster}${name?` name="${name}"`:''}`);
+    
   });
 
   // raw (advanced)
@@ -1118,7 +1125,7 @@ async function sendFileToDevice(u8, name) {
     if (!isConnected()) return log('Not connected','warn');
     const tag = $('#tag').value.trim().toUpperCase();
     const payload = ($('#payload').value || '').replace(/\s+/g, '').toUpperCase();
-    try { send(buildCmd(tag, payload, 10)); } catch (e) { log('Bad payload: ' + e.message, 'warn'); }
+    try { send(buildCmd(tag, payload, PAD_DEFAULT)); } catch (e) { log('Bad payload: ' + e.message, 'warn'); }
   });
 
   // File transfer UI (advanced)
@@ -1294,12 +1301,18 @@ async function sendFileToDevice(u8, name) {
   // F9: Set eye (file metadata)
   $('#edApplyEye').addEventListener('click', ()=>{
     if (!isConnected()) return log('Not connected','warn');
-    const clusterShort = (parseInt($('#edCluster').value||'0',10)) & 0xFFFF;
+    const cluster = Math.max(0, parseInt($('#edCluster').value||'0',10)) >>> 0;
     const name = ($('#edName').value || '').trim();
-    const nameHex = utf16leHex(name);
-    const payload = intToHex(ed.eye,1) + '000000' + intToHex(clusterShort,2) + '5C55' + nameHex;
-    send(buildCmd('F9', payload));
-    log(`Set Eye (F9) icon=${ed.eye} cluster=${clusterShort} name="${name}"`);
+    let payload = intToHex(ed.eye,1) + '00' + intToHex(cluster,4);
+    if (name) {
+      const nameHex = utf16leHex(name);
+      const nameLen = intToHex((nameHex.length/2) + 2, 1);
+      payload += nameLen + '5C55' + nameHex;
+    } else {
+      payload += '00';
+    }
+    send(buildCmd('F9', payload, PAD_DEFAULT));
+    log(`Set Eye (F9) icon=${ed.eye} cluster=${cluster}${name?` name="${name}"`:''}`);
   });
 
   // CA: Set animation
