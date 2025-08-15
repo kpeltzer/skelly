@@ -219,13 +219,16 @@ function maybeWarnLongTrack(durationSec) {
   };
   let targetsBuiltFromE0 = false;
 
-  function eyeSrc(n) { return `images/icon_eyes_${n}_se.png`; }
-  function eyeImgHTML(n) {
-    const id = Math.max(1, Math.min(18, n|0));
-    const png = eyeSrc(id);
-    const bmp = `images/icon_eyes_${id}_se.bmp`;
-    return `<img class="eye-thumb" src="${png}" onerror="this.onerror=null;this.src='${bmp}'" alt="eye ${id}" />`;
-  }
+    function eyeSrc(eyeNumber /* device value */) {
+        const imgIdx = EYE_NUM_TO_IMG[eyeNumber] || eyeNumber;
+        return `images/icon_eyes_${imgIdx}_se.png`;
+    }  
+    function eyeImgHTML(eyeNumber /* device value */) {
+        const imgIdx = EYE_NUM_TO_IMG[eyeNumber] || eyeNumber;
+        const png = `images/icon_eyes_${imgIdx}_se.png`;
+        const bmp = `images/icon_eyes_${imgIdx}_se.bmp`;
+        return `<img class="eye-thumb" src="${png}" onerror="this.onerror=null;this.src='${bmp}'" alt="eye ${eyeNumber}" />`;
+    }
   function buildTargetOptions(count = 6) {
     const sel = $('#targetSelect');
     if (!sel) return;
@@ -565,6 +568,17 @@ function maybeWarnLongTrack(durationSec) {
     }
   }
 
+ // Image index (1..18) → device eye number
+    const EYE_IMG_TO_NUM = {
+    1:1,  2:10, 3:2,  4:11, 5:3,  6:12,
+    7:4,  8:13, 9:5, 10:14,11:6, 12:15,
+    13:7, 14:16,15:8, 16:17,17:9, 18:18
+    };
+    // Reverse: device eye number → image index (for showing correct icon)
+    const EYE_NUM_TO_IMG = Object.fromEntries(
+    Object.entries(EYE_IMG_TO_NUM).map(([img, num]) => [num, Number(img)])
+    );
+
   // --- helper: exact-hex (NO MTU padding) ---
   function chunkToHex(u8, off, per) {
     const end = Math.min(off + per, u8.length);
@@ -760,29 +774,30 @@ function maybeWarnLongTrack(durationSec) {
   $('#filesFilter')?.addEventListener('input', updateFilesTable);
 
   // Appearance eye grid
-  let apEye = 1;
-  function buildAppearanceEyeGrid() {
-    const grid = document.querySelector('#apEyeGrid');
-    if (!grid) return;
-    grid.innerHTML = '';
-    for (let i = 1; i <= 18; i++) {
-      const div = document.createElement('div');
-      div.className = 'eye-opt' + (i === apEye ? ' selected' : '');
-      div.dataset.eye = String(i);
-      div.innerHTML = eyeImgHTML(i);
-      div.title = `Eye ${i}`;
-      grid.appendChild(div);
-    }
+  let apEye = 1; // device eye number
+function buildAppearanceEyeGrid() {
+  const grid = document.querySelector('#apEyeGrid');
+  if (!grid) return;
+  grid.innerHTML = '';
+  for (let imgIdx = 1; imgIdx <= 18; imgIdx++) {
+    const eyeNum = EYE_IMG_TO_NUM[imgIdx] || imgIdx; // device value for this tile
+    const div = document.createElement('div');
+    div.className = 'eye-opt' + (eyeNum === apEye ? ' selected' : '');
+    div.dataset.eye = String(eyeNum);   // store the device eye number
+    div.innerHTML = eyeImgHTML(eyeNum); // renders correct icon
+    div.title = `Eye ${eyeNum}`;
+    grid.appendChild(div);
   }
-  buildAppearanceEyeGrid();
+}
+buildAppearanceEyeGrid();
 
-  document.querySelector('#apEyeGrid')?.addEventListener('click', (e) => {
-    const cell = e.target.closest('.eye-opt');
-    if (!cell) return;
-    apEye = parseInt(cell.dataset.eye, 10);
-    document.querySelectorAll('#apEyeGrid .eye-opt').forEach(el => el.classList.remove('selected'));
-    cell.classList.add('selected');
-  });
+document.querySelector('#apEyeGrid')?.addEventListener('click', (e) => {
+  const cell = e.target.closest('.eye-opt');
+  if (!cell) return;
+  apEye = parseInt(cell.dataset.eye, 10);         // device eye number
+  document.querySelectorAll('#apEyeGrid .eye-opt').forEach(el => el.classList.remove('selected'));
+  cell.classList.add('selected');
+});
 
   document.querySelector('#apSetEye')?.addEventListener('click', () => {
     if (!isConnected()) return log('Not connected','warn');
@@ -1243,29 +1258,30 @@ function initMoveGroup(rootId) {
       }
     };
 
-    // build eye grid 1..18
+    // build eye grid 1..18 using mapping
     eyeGrid.innerHTML = '';
-    for (let i = 1; i <= 18; i++) {
-      const div = document.createElement('div');
-      div.className = 'eye-opt' + (i === ed.eye ? ' selected' : '');
-      div.dataset.eye = String(i);
-      div.innerHTML = eyeImgHTML(i);
-      div.title = `Eye ${i}`;
-      eyeGrid.appendChild(div);
+        for (let imgIdx = 1; imgIdx <= 18; imgIdx++) {
+        const eyeNum = EYE_IMG_TO_NUM[imgIdx] || imgIdx; // device value
+        const div = document.createElement('div');
+        div.className = 'eye-opt' + (eyeNum === ed.eye ? ' selected' : '');
+        div.dataset.eye = String(eyeNum);               // device value in dataset
+        div.innerHTML = eyeImgHTML(eyeNum);
+        div.title = `Eye ${eyeNum}`;
+        eyeGrid.appendChild(div);
     }
-
     editModal.classList.remove('hidden');
   }
+  
   function closeEditModal() { editModal.classList.add('hidden'); }
   $('#edClose').addEventListener('click', closeEditModal);
 
-  eyeGrid.addEventListener('click', (e) => {
+    eyeGrid.addEventListener('click', (e) => {
     const cell = e.target.closest('.eye-opt');
     if (!cell) return;
-    ed.eye = parseInt(cell.dataset.eye, 10);
+    ed.eye = parseInt(cell.dataset.eye, 10);        // device value
     eyeGrid.querySelectorAll('.eye-opt').forEach(el => el.classList.remove('selected'));
     cell.classList.add('selected');
-  });
+    });
 
   // C7: Delete (with confirmation)
   $('#edDelete').addEventListener('click', ()=>{
@@ -1333,16 +1349,56 @@ function initMoveGroup(rootId) {
   set('torso', !all && torso);
 }
 
-// Example: when opening a saved item editor
-function openEditModal(item){
-  // …your existing code…
-  setMoveSelection('edMove', {
-    all:   item.movementAll === true,
-    head:  item.movementHead === true,
-    arm:   item.movementArm === true,
-    torso: item.movementTorso === true
+
+// ===== Per-file color picker sync =====
+const edColorPick = $('#edColorPick');
+['edR','edG','edB'].forEach(id => {
+  $('#'+id)?.addEventListener('input', () => {
+    const rr = clamp($('#edR').value,0,255);
+    const gg = clamp($('#edG').value,0,255);
+    const bb = clamp($('#edB').value,0,255);
+    const hex = `#${intToHex(rr,1)}${intToHex(gg,1)}${intToHex(bb,1)}`.toLowerCase();
+    if (edColorPick && edColorPick.value !== hex) edColorPick.value = hex;
   });
+});
+edColorPick?.addEventListener('input', () => {
+  const v = edColorPick.value.replace('#','');
+  if (v.length === 6) {
+    $('#edR').value = parseInt(v.slice(0,2),16);
+    $('#edG').value = parseInt(v.slice(2,4),16);
+    $('#edB').value = parseInt(v.slice(4,6),16);
+  }
+});
+
+// Reset defaults when opening the modal
+// (Put inside openEditModal after you set ed.eye/name/etc.)
+if ($('#edColorPick')) {
+  $('#edR').value = 255; $('#edG').value = 0; $('#edB').value = 0;
+  $('#edColorPick').value = '#ff0000';
 }
+
+// Apply per-file color (F4, loop=0, ch=FF, +cluster+name)
+$('#edApplyRGB')?.addEventListener('click', () => {
+  if (!isConnected()) return log('Not connected','warn');
+
+  const r = intToHex(clamp($('#edR').value,0,255), 1);
+  const g = intToHex(clamp($('#edG').value,0,255), 1);
+  const b = intToHex(clamp($('#edB').value,0,255), 1);
+  const loop = '00'; // not cycling; just set this color
+  const cluster = intToHex(Math.max(0, parseInt($('#edCluster').value || '0', 10)) >>> 0, 4);
+  const name = ($('#edName').value || '').trim();
+
+  let payload = 'FF' + r + g + b + loop + cluster;
+  if (name) {
+    const nameHex = utf16leHex(name);
+    payload += intToHex((nameHex.length/2) + 2, 1) + '5C55' + nameHex;
+  } else {
+    payload += '00';
+  }
+
+  send(buildCmd('F4', payload, PAD_MEDIA));
+  log(`Set Color (F4) for file "${name || '(no name)'}" rgb=${parseInt(r,16)},${parseInt(g,16)},${parseInt(b,16)} cluster=${parseInt(cluster,16)}`);
+});
 
 
 })();
