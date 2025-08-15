@@ -621,7 +621,7 @@
     $('#statBtName') && ($('#statBtName').textContent = status.btName || '—');
     if ($('#statVolume')) {
       const v = status.volume;
-      $('#statVolume').textContent = (v==null) ? '—' : `${v} (${Math.round(v*100/255)}%)`;
+      $('#statVolume').textContent = (v==null) ? '—' : `${v}%`;
     }
     $('#statAction') && ($('#statAction').textContent = status.live.action ?? '—');
 
@@ -1066,9 +1066,8 @@
   }
   $('#btnSetVol').addEventListener('click', () => {
     if (!isConnected()) return log('Not connected','warn');
-    const pct = clamp($('#vol').value, 0, 100);
-    const v255 = Math.round(pct * 255 / 100);
-    send(buildCmd('FA', intToHex(v255, 1), PAD_MEDIA));
+     const v = Math.max(0, Math.min(255, parseInt($('#vol').value || '0', 10)));
+    send(buildCmd('FA', intToHex(v, 1), PAD_MEDIA));
   });
 
   // brightness (selected target) with slider sync
