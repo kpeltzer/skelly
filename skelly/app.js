@@ -1634,6 +1634,12 @@ function ensureSlowWarning() {
   });
 }
 
+function applyAdvVisibility() {
+  advRawBlock.classList.toggle('hidden', !advRaw.checked);
+  advFTBlock.classList.toggle('hidden',  !advFT.checked);
+  const ftInfo = document.getElementById('ftInfoBlock');
+  if (ftInfo) ftInfo.classList.toggle('hidden', !!advFT.checked); // show info when OFF, hide when ON
+}
 
 
 })();

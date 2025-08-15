@@ -260,6 +260,12 @@
     /* (Optional) Keep the original image as a fallback, but hide it */
     .topbar-right form.donate input[type="image"]{ display:none; }
 
+    /* Subcard (used for upcoming features) */
+    .subcard{
+      border:1px dashed #28303a; background:#0f1216; border-radius:12px; padding:12px;
+    }
+    .subcard-head{ margin-bottom:6px; color:#c7d2fe; }
+    .subcard.upcoming{ opacity:.9; }
 
 
   </style>
@@ -534,11 +540,21 @@
         </div>
       </div>
 
-
+      <!-- File Transfer info (shown when feature is OFF) -->
+      <div id="ftInfoBlock" class="card" style="background:#0f1216">
+        <h2>File Transfer</h2>
+        <p class="small muted" style="margin-top:6px">
+          To enable the file transfer feature, select it from the Advanced menu in the upper right corner.
+          This feature will enable you to upload MP3 files directly as well as upload files longer than 30 seconds.
+        </p>
+      </div>
       <!-- File transfer (advanced) -->
       <div class="spacer"></div>
       <div id="advFTBlock" class="card hidden" style="background:#0f1216">
         <h2>File Transfer</h2>
+        <div class="small muted" style="margin:6px 0 10px">
+          Once the file has been uploaded you will be able to modify its settings (either here or in the official app).
+        </div>
         <label>Choose file</label>
         <input id="fileInput" type="file" />
         <label class="small checkline mt-8">
@@ -572,8 +588,11 @@
 
     <!-- MIDDLE COL: Text to Speech (bottom) -->
     <section class="card area-empty">
-      <h2>Text to Speech</h2>
-      <form id="ttsForm" onsubmit="return false;">
+      <h2>Misc Speech Addons</h2>
+      <div class="subcard upcoming" aria-disabled="true">
+          <div class="subcard-head">Text To Speech
+        </div>
+        <form id="ttsForm" onsubmit="return false;">
         <label for="ttsText">Text</label>
         <textarea id="ttsText" rows="5" placeholder="Type what Skelly should say..."></textarea>
 
@@ -583,6 +602,22 @@
 
         <div class="small muted">TODO: Add effects...</div>
       </form>
+        </div>
+      
+      <div class="spacer"></div>
+        <div class="subcard upcoming" aria-disabled="true">
+          <div class="subcard-head">
+            <strong>Upcoming:</strong> Record custom audio / forward device audio
+          </div>
+          <p class="small muted">
+            Capture mic audio or forward system audio directly to Skelly (work in progress).
+          </p>
+          <div class="row">
+            <button class="btn" disabled>Record from Microphone</button>
+            <button class="btn" disabled>Forward Device Audio</button>
+          </div>
+        </div>
+
     </section>
 
 
