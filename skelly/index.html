@@ -22,6 +22,11 @@
     .btn.danger { border-color:#5d1b1b; background:#2a0f10; color:#fecaca; }
     .btn.xs, .btn.sm { padding:6px 8px; font-size:12px; border-radius:10px; }
 
+    /* Show command code only on hover for query buttons */
+    .btn.cmd::after { content: ''; }
+    .btn.cmd:hover::after { content: ' (' attr(data-code) ')'; color: var(--muted); }
+
+
     /* ======= NEW 3-COLUMN LAYOUT ======= */
     .grid{
       display:grid;
@@ -104,6 +109,7 @@
     body.disconnected .grid .card { opacity:.6; pointer-events:none; }
     body.disconnected .area-dev,
     body.disconnected .area-log { opacity:1; pointer-events:auto; }
+    body.disconnected #status { color: var(--err); }
 
     /* Sliders */
     input[type=range]{ width:100%; }
@@ -185,7 +191,7 @@
     <div class="topbar-right">
       <span id="status" class="pill">● <span>Disconnected</span></span>
       <button class="btn primary" id="btnConnect">Connect</button>
-      <button class="btn" id="btnDisconnect" disabled>Disconnect</button>
+      <button class="btn danger" id="btnDisconnect" disabled>Disconnect</button>
       <div class="menuwrap">
         <button class="btn" id="btnAdvanced">⚙️ Advanced ▾</button>
         <div id="advMenu" class="dropdown hidden" role="menu" aria-label="Advanced options">
@@ -209,13 +215,14 @@
       <div>
         <label>Queries</label>
         <div class="actions">
-          <button class="btn" data-q="E0">Device Params (E0)</button>
-          <button class="btn" data-q="E1">Live Mode (E1)</button>
-          <button class="btn" data-q="E5">Volume? (E5)</button>
-          <button class="btn" data-q="E6">BT Name? (E6)</button>
-          <button class="btn" data-q="EE">Version? (EE)</button>
-          <button class="btn" data-q="D2">Capacity? (D2)</button>
+          <button class="btn cmd" data-q="E0" data-code="E0">Get Device Params</button>
+          <button class="btn cmd" data-q="E1" data-code="E1">Get Live Mode</button>
+          <button class="btn cmd" data-q="E5" data-code="E5">Get Volume</button>
+          <button class="btn cmd" data-q="E6" data-code="E6">Get BT Name</button>
+          <button class="btn cmd" data-q="EE" data-code="EE">Get Version</button>
+          <button class="btn cmd" data-q="D2" data-code="D2">Get Capacity</button>
         </div>
+
       </div>
 
       <!-- Raw Command (advanced) -->
