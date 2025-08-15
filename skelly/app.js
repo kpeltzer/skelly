@@ -381,6 +381,28 @@ function maybeWarnLongTrack(durationSec) {
     const got = rows.length;
     $('#filesSummary').textContent = `Received ${got}${files.expected?` / ${files.expected}`:''}`;
   }
+
+    function normalizeDevName(s){ return (s||'').trim().toLowerCase(); }
+    function deviceHasFileName(name){
+    if (!name) return null;
+    const needle = normalizeDevName(name);
+    for (const it of files.items.values()){
+        if (normalizeDevName(it.name) === needle) return it;
+    }
+    return null;
+    }
+    function warnIfNameConflicts(name, inputSelector){
+    const conflict = deviceHasFileName(name);
+    const el = document.querySelector(inputSelector);
+    if (el) el.classList.toggle('warn-border', !!conflict);
+    if (conflict){
+        log(`Warning: A file named "${conflict.name}" already exists on the device. Uploading will most likely overwrite it.`, 'warn');
+        return true;
+    }
+    return false;
+    }
+
+
   const escapeHtml = s => s.replace(/[&<>"]/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
   async function startFetchFiles(triggerChain=false) {
@@ -1040,6 +1062,10 @@ function initMoveGroup(rootId) {
     try { send(buildCmd(tag, payload, PAD_DEFAULT)); } catch (e) { log('Bad payload: ' + e.message, 'warn'); }
   });
 
+document.getElementById('fileName')?.addEventListener('input', () => {
+  warnIfNameConflicts(document.getElementById('fileName').value, '#fileName');
+});
+
   // File transfer UI (advanced)
 let lastFileBytes = null, lastFileName = '';
 $('#fileInput').addEventListener('change', async (e)=>{
@@ -1079,6 +1105,7 @@ $('#fileInput').addEventListener('change', async (e)=>{
 
     if (!$('#fileName').value) $('#fileName').value = lastFileName;
     setProgress(0,0);
+    warnIfNameConflicts(($('#fileName').value || lastFileName), '#fileName');
   } catch (err) {
     log(`File read/convert error: ${err.message}`, 'warn');
   }
@@ -1124,7 +1151,7 @@ $('#fileInput').addEventListener('change', async (e)=>{
         $('#fileName').value = name;
     }
     if (!name) { log('Provide a device filename.', 'warn'); return; }
-
+    warnIfNameConflicts(name, '#fileName');
     // Show heads-up unless user opted out
     const proceed = await ensureSlowWarning();
     if (!proceed) return;
@@ -1217,6 +1244,9 @@ $('#fileInput').addEventListener('change', async (e)=>{
     log(`Set Speed (F6) for file "${name || '(no name)'}" speed=${parseInt($('#edSpeed').value||'0',10)} cluster=${parseInt($('#edCluster').value||'0',10)}`);
     });
 
+    document.getElementById('edName')?.addEventListener('input', () => {
+    warnIfNameConflicts(document.getElementById('edName').value, '#edName');
+    });
 
   const editModal = $('#editModal');
   const eyeGrid = $('#eyeGrid');
@@ -1251,6 +1281,11 @@ $('#fileInput').addEventListener('change', async (e)=>{
         const dur = await getAudioDurationFromFile(f);
         maybeWarnLongTrack(dur);
     } catch {}
+
+    // If filename field is empty, prefill with picked name and check conflict
+    if (!$('#edName').value) $('#edName').value = f.name;
+    warnIfNameConflicts($('#edName').value || f.name, '#edName');
+
     };
     
 edUploadBtn.onclick = async () => {
@@ -1278,6 +1313,7 @@ edUploadBtn.onclick = async () => {
       u8 = new Uint8Array(buf);
       targetName = ($('#edName').value || f.name).trim() || f.name;
       log(`Picked file (no convert): ${targetName} (${u8.length} bytes)`);
+      warnIfNameConflicts(targetName, '#edName');
     }
 
     // ---- rest of your upload logic unchanged, but use u8 + targetName ----
