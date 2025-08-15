@@ -800,6 +800,223 @@ function maybeWarnLongTrack(durationSec) {
     log(`Set Eye (F9) icon=${apEye} cluster=${cluster}${name?` name="${name}"`:''}`);
   });
 
+
+// ---------- Movement toggles (shared) ----------
+function initMoveGroup(rootId) {
+  const root = document.getElementById(rootId);
+  if (!root) return;
+  root.addEventListener('click', (e) => {
+    const btn = e.target.closest('.iconToggle');
+    if (!btn || !root.contains(btn)) return;
+
+    const part = btn.dataset.part; // 'all' | 'head' | 'arm' | 'torso'
+    const allBtn   = root.querySelector('[data-part="all"]');
+    const headBtn  = root.querySelector('[data-part="head"]');
+    const armBtn   = root.querySelector('[data-part="arm"]');
+    const torsoBtn = root.querySelector('[data-part="torso"]');
+
+    if (part === 'all') {
+      // Selecting ALL turns the others off
+      allBtn.classList.toggle('selected');
+      if (allBtn.classList.contains('selected')) {
+        headBtn.classList.remove('selected');
+        armBtn.classList.remove('selected');
+        torsoBtn.classList.remove('selected');
+      }
+    } else {
+      // Toggling any individual deselects ALL
+      btn.classList.toggle('selected');
+      allBtn.classList.remove('selected');
+    }
+  });
+}
+
+    initMoveGroup('liveMove');
+    initMoveGroup('edMove');
+
+    // Action codes per your Android "CA" command (setMusicPlayAnimation)
+    // Head: 1 on, 2 off | Arm: 3 on, 4 off
+    // Torso codes were inconsistent in logs (6 vs 7). Use 6/7 but swap by context.
+    const MOV_MAP = {
+    live: { HEAD: {on:1, off:2}, ARM:{on:3, off:4}, TORSO:{on:6, off:7}, ALL_ON:255 },
+    file: { HEAD: {on:1, off:2}, ARM:{on:3, off:4}, TORSO:{on:7, off:6}, ALL_ON:255 } // note torso swapped
+    };
+
+    // Build CA payload: action(1B) + 00 + cluster(4B) + nameLen+5C55+UTF16LE(name) | 00
+    function buildCAPayload(actionNumber, clusterNumber, name) {
+    const action = intToHex(actionNumber, 1);
+    const zero   = '00';
+    const cluster= intToHex(clusterNumber, 4);
+    if (name && name.trim()) {
+        const nameHex = utf16leHex(name.trim());
+        const len = intToHex((nameHex.length / 2) + 2, 1);
+        return action + zero + cluster + len + '5C55' + nameHex;
+    }
+    return action + zero + cluster + '00';
+    }
+
+    function applyMovementFromUI(containerId, { context }) {
+    if (!isConnected()) return log('Not connected', 'warn');
+
+    const root = document.getElementById(containerId);
+    const sel = (part) => root.querySelector(`[data-part="${part}"]`)?.classList.contains('selected');
+
+    const ALL   = sel('all');
+    const HEAD  = sel('head');
+    const ARM   = sel('arm');
+    const TORSO = sel('torso');
+
+    const map = context === 'live' ? MOV_MAP.live : MOV_MAP.file;
+
+    // Determine addressing
+    let cluster = 0, name = '';
+    if (context === 'file') {
+        cluster = Math.max(0, parseInt($('#edCluster').value || '0', 10));
+        name    = ($('#edName').value || '').trim();
+    }
+
+    // If ALL is selected -> single CA with FF
+    if (ALL) {
+        const payload = buildCAPayload(map.ALL_ON, cluster, context === 'file' ? name : '');
+        send(buildCmd('CA', payload, PAD_MEDIA));
+        log(`Movement: ALL ON (CA) ${context==='file' ? `(file "${name}" cluster=${cluster})` : '(live)'}`);
+        return;
+    }
+
+    // Otherwise: send each part ON/OFF to match the toggles
+    const ops = [
+        { label:'HEAD',  on:HEAD,  codes:map.HEAD  },
+        { label:'ARM',   on:ARM,   codes:map.ARM   },
+        { label:'TORSO', on:TORSO, codes:map.TORSO },
+    ];
+
+    ops.forEach(o => {
+        const code = o.on ? o.codes.on : o.codes.off;
+        const payload = buildCAPayload(code, cluster, context === 'file' ? name : '');
+        send(buildCmd('CA', payload, PAD_MEDIA));
+        log(`Movement: ${o.label} ${o.on ? 'ON' : 'OFF'} (CA) ${context==='file' ? `(file "${name}" cluster=${cluster})` : '(live)'}`);
+    });
+    }
+
+    // Buttons to apply the current toggles
+    $('#applyLiveMove')?.addEventListener('click', () => applyMovementFromUI('liveMove', { context:'live' }));
+    $('#applyEdMove')?.addEventListener('click',   () => applyMovementFromUI('edMove',  { context:'file' }));
+
+
+    // === Cycle All Colors (Live + Per-file) ===
+    // Sequence matches your logs: F3 (brightness) -> F2 (mode=1 Static) -> F4 (loop=1)
+    function sendColorCycle({ context }) {
+    if (!isConnected()) return log('Not connected', 'warn');
+
+    // Use current picker values as the seed RGB (like the logs did)
+    const r = clamp($('#r').value, 0, 255);
+    const g = clamp($('#g').value, 0, 255);
+    const b = clamp($('#b').value, 0, 255);
+
+    // Common pieces
+    const chFF   = 'FF';
+    const rHex   = intToHex(r,1);
+    const gHex   = intToHex(g,1);
+    const bHex   = intToHex(b,1);
+    const loopOn = '01';
+
+    if (context === 'live') {
+        // LIVE: no name/cluster; respect current brightness input
+        const brightness = intToHex(clamp($('#brightness').value, 0, 255), 1);
+        const cluster    = intToHex(0, 4);
+        const nameLen    = '00';
+
+        // F3: brightness on All channels
+        send(buildCmd('F3', chFF + brightness + cluster + nameLen, PAD_MEDIA));
+        // F2: mode=1 (Static) on All channels
+        send(buildCmd('F2', chFF + '01' + cluster + nameLen, PAD_MEDIA));
+        // F4: RGB with loop=1 on All channels
+        const f4 = chFF + rHex + gHex + bHex + loopOn + cluster + nameLen;
+        send(buildCmd('F4', f4, PAD_MEDIA));
+
+        log(`Cycle Colors (LIVE): ch=FF rgb=${r},${g},${b} (F3→F2→F4 loop=1)`);
+    } else {
+        // FILE: include cluster + filename
+        const clusterNum = Math.max(0, parseInt($('#edCluster').value || '0', 10)) >>> 0;
+        const cluster    = intToHex(clusterNum, 4);
+        const name       = ($('#edName').value || '').trim();
+        const nameHex    = name ? utf16leHex(name) : '';
+        const nameLen    = name ? intToHex((nameHex.length/2) + 2, 1) : '00';
+        const nameBlock  = name ? (nameLen + '5C55' + nameHex) : nameLen;
+
+        // Per-file logs show brightness = 255 for this flow; match that.
+        send(buildCmd('F3', chFF + 'FF' + cluster + nameBlock, PAD_MEDIA));
+        send(buildCmd('F2', chFF + '01' + cluster + nameBlock, PAD_MEDIA));
+        const f4 = chFF + rHex + gHex + bHex + loopOn + cluster + nameBlock;
+        send(buildCmd('F4', f4, PAD_MEDIA));
+
+        log(`Cycle Colors (FILE): "${name || '(no name)'}" ch=FF rgb=${r},${g},${b} (F3→F2→F4 loop=1 cluster=${clusterNum})`);
+    }
+    }
+
+    // Wire the new buttons
+    document.getElementById('btnColorCycleLive')?.addEventListener('click', () => sendColorCycle({ context: 'live' }));
+    document.getElementById('edColorCycle')?.addEventListener('click', () => sendColorCycle({ context: 'file' }));
+
+
+    // --- Lighting Type (F2) + Speed (F6) ---
+
+    // Show/hide speed when the mode changes
+    const modeSel = $('#lightMode');
+    const speedBlock = $('#speedBlock');
+    modeSel?.addEventListener('change', () => {
+    const v = parseInt(modeSel.value, 10);
+    speedBlock.classList.toggle('hidden', v === 1); // hide for Static
+    });
+
+    // Apply lighting mode (F2)
+    $('#btnSetMode')?.addEventListener('click', () => {
+    if (!isConnected()) return log('Not connected','warn');
+    const ch = currentChannelHex(); // 'FF' or '01'..'0N'
+    const mode = intToHex(parseInt($('#lightMode').value,10), 1);
+    const cluster = intToHex(Math.max(0, parseInt($('#apCluster').value || '0',10)), 4);
+    const name = ($('#apName').value || '').trim();
+
+    let payload = ch + mode + cluster;
+    if (name) {
+        const nameHex = utf16leHex(name);
+        const nameLen = intToHex((nameHex.length/2) + 2, 1);
+        payload += nameLen + '5C55' + nameHex;
+    } else {
+        payload += '00';
+    }
+    send(buildCmd('F2', payload, PAD_MEDIA));
+    log(`Set Mode (F2) channel=${ch} mode=${parseInt($('#lightMode').value,10)} cluster=${parseInt($('#apCluster').value||'0',10)}${name?` name="${name}"`:''}`);
+    });
+
+    // Speed sync + apply (F6)
+    const speedRange = $('#speedRange');
+    const speedNum = $('#speed');
+    if (speedRange && speedNum) {
+    speedRange.addEventListener('input', e => speedNum.value = e.target.value);
+    speedNum.addEventListener('input', e => speedRange.value = clamp(e.target.value, 0, 255));
+    }
+
+    $('#btnSetSpeed')?.addEventListener('click', () => {
+    if (!isConnected()) return log('Not connected','warn');
+    const ch = currentChannelHex();
+    const speed = intToHex(clamp($('#speed').value, 0, 255), 1);
+    const cluster = intToHex(Math.max(0, parseInt($('#apCluster').value || '0',10)), 4);
+    const name = ($('#apName').value || '').trim();
+
+    let payload = ch + speed + cluster;
+    if (name) {
+        const nameHex = utf16leHex(name);
+        const nameLen = intToHex((nameHex.length/2) + 2, 1);
+        payload += nameLen + '5C55' + nameHex;
+    } else {
+        payload += '00';
+    }
+    send(buildCmd('F6', payload, PAD_MEDIA));
+    log(`Set Speed (F6) channel=${ch} speed=${parseInt($('#speed').value||'0',10)} cluster=${parseInt($('#apCluster').value||'0',10)}${name?` name="${name}"`:''}`);
+    });
+
+
   // raw (advanced)
   $('#btnSendRaw').addEventListener('click', () => {
     if (!isConnected()) return log('Not connected','warn');
@@ -861,6 +1078,65 @@ function maybeWarnLongTrack(durationSec) {
   });
 
   // ---------- Edit modal ----------
+
+    // --- Edit modal: Lighting Type (per-file) ---
+    const edLightMode  = $('#edLightMode');
+    const edSpeedBlock = $('#edSpeedBlock');
+    const edSpeedRange = $('#edSpeedRange');
+    const edSpeedNum   = $('#edSpeed');
+
+    // Toggle speed UI for Static vs Strobe/Pulsing
+    edLightMode?.addEventListener('change', () => {
+    const v = parseInt(edLightMode.value, 10);
+    edSpeedBlock.classList.toggle('hidden', v === 1); // hide when Static
+    });
+
+    // Sync speed inputs
+    if (edSpeedRange && edSpeedNum) {
+    edSpeedRange.addEventListener('input', e => edSpeedNum.value = e.target.value);
+    edSpeedNum.addEventListener('input',  e => edSpeedRange.value = clamp(e.target.value, 0, 255));
+    }
+
+    // Apply lighting MODE for this specific file (F2)
+    $('#edApplyMode')?.addEventListener('click', () => {
+    if (!isConnected()) return log('Not connected', 'warn');
+    const mode    = intToHex(parseInt($('#edLightMode').value, 10), 1);
+    const cluster = intToHex(Math.max(0, parseInt($('#edCluster').value || '0', 10)), 4);
+    const name    = ($('#edName').value || '').trim();
+
+    // Per-file: channel FF (all) + cluster + filename
+    let payload = 'FF' + mode + cluster;
+    if (name) {
+        const nameHex = utf16leHex(name);
+        payload += intToHex((nameHex.length/2) + 2, 1) + '5C55' + nameHex;
+    } else {
+        payload += '00';
+    }
+
+    send(buildCmd('F2', payload, PAD_MEDIA));
+    log(`Set Mode (F2) for file "${name || '(no name)'}" mode=${parseInt($('#edLightMode').value,10)} cluster=${parseInt($('#edCluster').value||'0',10)}`);
+    });
+
+    // Apply SPEED for this specific file (F6)
+    $('#edApplySpeed')?.addEventListener('click', () => {
+    if (!isConnected()) return log('Not connected', 'warn');
+    const speed   = intToHex(clamp($('#edSpeed').value, 0, 255), 1);
+    const cluster = intToHex(Math.max(0, parseInt($('#edCluster').value || '0', 10)), 4);
+    const name    = ($('#edName').value || '').trim();
+
+    let payload = 'FF' + speed + cluster;
+    if (name) {
+        const nameHex = utf16leHex(name);
+        payload += intToHex((nameHex.length/2) + 2, 1) + '5C55' + nameHex;
+    } else {
+        payload += '00';
+    }
+
+    send(buildCmd('F6', payload, PAD_MEDIA));
+    log(`Set Speed (F6) for file "${name || '(no name)'}" speed=${parseInt($('#edSpeed').value||'0',10)} cluster=${parseInt($('#edCluster').value||'0',10)}`);
+    });
+
+
   const editModal = $('#editModal');
   const eyeGrid = $('#eyeGrid');
   const ed = { serial:null, cluster:0, name:'', eye:1 };
@@ -876,6 +1152,11 @@ function maybeWarnLongTrack(durationSec) {
     $('#edCluster').value = it.cluster;
     $('#edAction').value = 255;
     $('#edName').value = it.name || '';
+    $('#edLightMode').value = '1';
+    $('#edSpeed').value = 0; $('#edSpeedRange').value = 0;
+    edSpeedBlock.classList.add('hidden'); // Static by default
+
+    ['all','head','arm','torso'].forEach(p => $('#edMove')?.querySelector(`[data-part="${p}"]`)?.classList.remove('selected'));
 
     const edUploadFile = $('#edUploadFile');
     const edUploadBtn  = $('#edUploadBtn');
@@ -1040,5 +1321,28 @@ function maybeWarnLongTrack(durationSec) {
     // TODO: implement protocol to send TTS to device
     log(`TTS requested: "${text}" (not implemented yet)`, 'warn');
   });
+
+  function setMoveSelection(rootId, {all=false, head=false, arm=false, torso=false}){
+  const root = document.getElementById(rootId); if(!root) return;
+  const set = (p, v)=> root.querySelector(`[data-part="${p}"]`)
+                     ?.classList.toggle('selected', !!v);
+  // “All” deselects others automatically in UI, but we set everything explicitly here.
+  set('all',   all);
+  set('head',  !all && head);
+  set('arm',   !all && arm);
+  set('torso', !all && torso);
+}
+
+// Example: when opening a saved item editor
+function openEditModal(item){
+  // …your existing code…
+  setMoveSelection('edMove', {
+    all:   item.movementAll === true,
+    head:  item.movementHead === true,
+    arm:   item.movementArm === true,
+    torso: item.movementTorso === true
+  });
+}
+
 
 })();
