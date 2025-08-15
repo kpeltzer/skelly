@@ -883,6 +883,11 @@ function initMoveGroup(rootId) {
 
     const map = context === 'live' ? MOV_MAP.live : MOV_MAP.file;
 
+    let lastPickedFile = null;        // original File object from <input>
+    let lastOriginalBytes = null;     // original bytes for the picked file
+    let lastFileBytes = null, lastFileName = '';  // (you already had these)
+
+
     // Determine addressing
     let cluster = 0, name = '';
     if (context === 'file') {
@@ -1041,32 +1046,98 @@ function initMoveGroup(rootId) {
   });
 
   // File transfer UI (advanced)
-  let lastFileBytes = null, lastFileName = '';
-  $('#fileInput').addEventListener('change', async (e)=>{
-     const f = e.target.files?.[0];
-    if (!f) { lastFileBytes = null; return; }
+let lastFileBytes = null, lastFileName = '';
+$('#fileInput').addEventListener('change', async (e)=>{
+  const f = e.target.files?.[0];
+  lastPickedFile = f || null;
+  lastOriginalBytes = null;
+  lastFileBytes = null;
+  lastFileName = '';
 
-    // Warn on >30s audio (non-blocking)
-    try {
-        const dur = await getAudioDurationFromFile(f);
-        maybeWarnLongTrack(dur);
-    } catch {}
+  if (!f) return;
 
-    // Continue as before
+  // Warn on >30s (non-blocking)
+  try {
+    const dur = await getAudioDurationFromFile(f);
+    maybeWarnLongTrack(dur);
+  } catch {}
+
+  try {
+    // Always capture the original bytes + name
     const buf = await f.arrayBuffer();
-    lastFileBytes = new Uint8Array(buf);
-    if (!$('#fileName').value) $('#fileName').value = f.name;
+    lastOriginalBytes = new Uint8Array(buf);
     lastFileName = f.name;
+
+    // If convert box is already checked, convert right away
+    if ($('#chkConvert')?.checked) {
+      const kbps = parseInt($('#mp3Kbps')?.value || '32', 10);
+      log(`Converting to MP3 8 kHz mono (${kbps} kbps)…`);
+      const { u8, name } = await convertFileToDeviceMp3(f, kbps);
+      lastFileBytes = u8;
+      lastFileName  = name;
+      log(`Converted: ${name} (${u8.length} bytes)`, 'warn');
+    } else {
+      // No convert right now: keep original as the active payload
+      lastFileBytes = lastOriginalBytes;
+      log(`Picked file: ${f.name} (${lastFileBytes.length} bytes)`);
+    }
+
+    if (!$('#fileName').value) $('#fileName').value = lastFileName;
     setProgress(0,0);
-    log(`Picked file: ${f.name} (${lastFileBytes.length} bytes)`);
-    });
-  $('#btnSendFile').addEventListener('click', async ()=>{
+  } catch (err) {
+    log(`File read/convert error: ${err.message}`, 'warn');
+  }
+});
+
+    
+    $('#btnSendFile').addEventListener('click', async ()=>{
     if (!isConnected()) return log('Not connected','warn');
-    if (!lastFileBytes) { log('Pick a file first.', 'warn'); return; }
-    const name = ($('#fileName').value || lastFileName || 'skelly.bin').trim();
+
+    // Must have a chosen file
+    if (!lastPickedFile && !lastFileBytes) {
+        log('Pick a file first.', 'warn'); 
+        return;
+    }
+
+    // If user toggled "Convert" AFTER selecting the file, convert now
+    try {
+        if ($('#chkConvert')?.checked && lastPickedFile) {
+        const kbps = parseInt($('#mp3Kbps')?.value || '32', 10);
+        log(`Converting to MP3 8 kHz mono (${kbps} kbps) before send…`);
+        const { u8, name } = await convertFileToDeviceMp3(lastPickedFile, kbps);
+        lastFileBytes = u8;
+        // If the filename box is empty or still matches the previous base, prefer .mp3
+        const typed = ($('#fileName').value || '').trim();
+        if (!typed || typed === lastFileName) {
+            $('#fileName').value = name;
+        }
+        lastFileName = name;
+        } else if (!$('#chkConvert')?.checked && lastOriginalBytes) {
+        // Ensure we’re using the original bytes if convert is off
+        lastFileBytes = lastOriginalBytes;
+        lastFileName = lastPickedFile?.name || lastFileName;
+        }
+    } catch (err) {
+        log(`Convert error: ${err.message} — sending original file`, 'warn');
+        if (lastOriginalBytes) { lastFileBytes = lastOriginalBytes; lastFileName = lastPickedFile?.name || lastFileName; }
+    }
+
+    // Filename to send (auto .mp3 if converting)
+    let name = ($('#fileName').value || lastFileName || 'skelly.bin').trim();
+    if ($('#chkConvert')?.checked && !/\.mp3$/i.test(name)) {
+        name = name.replace(/\.\w+$/,'') + '.mp3';
+        $('#fileName').value = name;
+    }
     if (!name) { log('Provide a device filename.', 'warn'); return; }
+
+    // Show heads-up unless user opted out
+    const proceed = await ensureSlowWarning();
+    if (!proceed) return;
+
     await sendFileToDevice(lastFileBytes, name);
-  });
+    });
+
+
   $('#btnCancelFile').addEventListener('click', async ()=>{
     if (!transfer.inProgress) return;
     transfer.cancel = true;
@@ -1187,76 +1258,83 @@ function initMoveGroup(rootId) {
     } catch {}
     };
     
-    edUploadBtn.onclick = async () => {
-      if (!isConnected()) return log('Not connected','warn');
-      const f = edUploadFile.files?.[0];
-      if (!f) return log('Pick a file in the Edit modal first.', 'warn');
+edUploadBtn.onclick = async () => {
+  if (!isConnected()) return log('Not connected','warn');
+  const f = edUploadFile.files?.[0];
+  if (!f) return log('Pick a file in the Edit modal first.', 'warn');
 
-      transfer.inProgress = true;
-      transfer.cancel = false;
-      transfer.chunks.clear();
-      edUploadBtn.disabled = true;
-      edUploadProg.textContent = 'Starting...';
+  transfer.inProgress = true;
+  transfer.cancel = false;
+  transfer.chunks.clear();
+  edUploadBtn.disabled = true;
+  edUploadProg.textContent = 'Starting...';
 
-      try {
-        const buf = await f.arrayBuffer();
-        const u8 = new Uint8Array(buf);
-        const targetName = ($('#edName').value || f.name).trim();
-        if (!targetName) throw new Error('Filename required');
+  try {
+    let u8, targetName;
+    if ($('#edChkConvert')?.checked) {
+      const kbps = parseInt($('#edMp3Kbps')?.value || '32', 10);
+      edUploadProg.textContent = `Converting to MP3 8 kHz mono (${kbps} kbps)…`;
+      const out = await convertFileToDeviceMp3(f, kbps);
+      u8 = out.u8; targetName = ($('#edName').value || out.name).trim() || out.name;
+      if (!$('#edName').value) $('#edName').value = out.name; // prefill
+      log(`Converted: ${targetName} (${u8.length} bytes)`, 'warn');
+    } else {
+      const buf = await f.arrayBuffer();
+      u8 = new Uint8Array(buf);
+      targetName = ($('#edName').value || f.name).trim() || f.name;
+      log(`Picked file (no convert): ${targetName} (${u8.length} bytes)`);
+    }
 
-        const size = u8.length;
-        const per = 500; // match main flow
-        const maxPack = Math.ceil(size / per);
-        const nameHex = utf16leHex(targetName);
+    // ---- rest of your upload logic unchanged, but use u8 + targetName ----
+    const size = u8.length;
+    const per = 500;
+    const maxPack = Math.ceil(size / per);
+    const nameHex = utf16leHex(targetName);
 
-        // C0 start + wait for BBC0
-        await send(buildCmd('C0', intToHex(size,4) + intToHex(maxPack,2) + '5C55' + nameHex));
-        let c0 = await waitForAck('BBC0', 5000);
-        if (!c0) throw new Error('Timeout waiting for BBC0');
-        const c0Failed  = parseInt(c0.slice(4,6),16);
-        const c0Written = parseInt(c0.slice(6,14),16) || 0;
-        if (c0Failed !== 0) throw new Error('Device rejected start (BBC0 failed)');
-        let startIdx = Math.floor(c0Written / per);
-        if (startIdx > 0) log(`Resuming at chunk index ${startIdx} (written=${c0Written})`, 'warn');
+    await send(buildCmd('C0', intToHex(size,4) + intToHex(maxPack,2) + '5C55' + nameHex));
+    let c0 = await waitForAck('BBC0', 5000);
+    if (!c0) throw new Error('Timeout waiting for BBC0');
+    const c0Failed  = parseInt(c0.slice(4,6),16);
+    const c0Written = parseInt(c0.slice(6,14),16) || 0;
+    if (c0Failed !== 0) throw new Error('Device rejected start (BBC0 failed)');
+    let startIdx = Math.floor(c0Written / per);
+    if (startIdx > 0) log(`Resuming at chunk index ${startIdx} (written=${c0Written})`, 'warn');
 
-        // data loop (no MTU padding)
-        for (let idx=startIdx; idx<maxPack; idx++) {
-          if (!isConnected()) throw new Error('Disconnected during upload');
-          if (transfer.cancel) throw new Error('Upload cancelled');
-          const off = idx * per;
-          const dataHex = chunkToHex(u8, off, per);
-          const payload = intToHex(idx,2) + dataHex;
-          transfer.chunks.set(idx, payload);
-          await send(buildCmd('C1', payload, 0));
-          edUploadProg.textContent = `Uploading ${idx+1} / ${maxPack}`;
-          await new Promise(r => setTimeout(r, 12));
-        }
+    for (let idx=startIdx; idx<maxPack; idx++) {
+      if (!isConnected()) throw new Error('Disconnected during upload');
+      if (transfer.cancel) throw new Error('Upload cancelled');
+      const off = idx * per;
+      const dataHex = chunkToHex(u8, off, per);
+      const payload = intToHex(idx,2) + dataHex;
+      transfer.chunks.set(idx, payload);
+      await send(buildCmd('C1', payload, 0));
+      edUploadProg.textContent = `Uploading ${idx+1} / ${maxPack}`;
+      await new Promise(r => setTimeout(r, 12));
+    }
 
-        // C2 end (8 zero bytes) + wait BBC2
-        await send(buildCmd('C2','',8));
-        let c2 = await waitForAck('BBC2', 3000);
-        if (!c2) throw new Error('Timeout waiting for BBC2');
-        const c2Failed = parseInt(c2.slice(4,6),16);
-        if (c2Failed !== 0) throw new Error('Device reported failure on end');
+    await send(buildCmd('C2','',8));
+    let c2 = await waitForAck('BBC2', 3000);
+    if (!c2) throw new Error('Timeout waiting for BBC2');
+    const c2Failed = parseInt(c2.slice(4,6),16);
+    if (c2Failed !== 0) throw new Error('Device reported failure on end');
 
-        // C3 rename
-        await send(buildCmd('C3', '5C55' + nameHex));
-        const c3 = await waitForAck('BBC3', 3000);
-        if (!c3) throw new Error('Timeout waiting for BBC3');
-        const c3Failed = parseInt(c3.slice(4,6),16);
-        if (c3Failed !== 0) throw new Error('Device failed final rename');
+    await send(buildCmd('C3', '5C55' + nameHex));
+    const c3 = await waitForAck('BBC3', 3000);
+    if (!c3) throw new Error('Timeout waiting for BBC3');
+    const c3Failed = parseInt(c3.slice(4,6),16);
+    if (c3Failed !== 0) throw new Error('Device failed final rename');
 
-        edUploadProg.textContent = 'Upload complete ✔';
-        log(`Edit modal upload complete for "${targetName}"`, 'warn');
-        startFetchFiles();
-      } catch (e) {
-        edUploadProg.textContent = 'Upload error';
-        log('Edit upload error: ' + e.message, 'warn');
-      } finally {
-        transfer.inProgress = false;
-        edUploadBtn.disabled = false;
-      }
-    };
+    edUploadProg.textContent = 'Upload complete ✔';
+    log(`Edit modal upload complete for "${targetName}"`, 'warn');
+    startFetchFiles();
+  } catch (e) {
+    edUploadProg.textContent = 'Upload error';
+    log('Edit upload error: ' + e.message, 'warn');
+  } finally {
+    transfer.inProgress = false;
+    edUploadBtn.disabled = false;
+  }
+};
 
     // build eye grid 1..18 using mapping
     eyeGrid.innerHTML = '';
@@ -1399,6 +1477,111 @@ $('#edApplyRGB')?.addEventListener('click', () => {
   send(buildCmd('F4', payload, PAD_MEDIA));
   log(`Set Color (F4) for file "${name || '(no name)'}" rgb=${parseInt(r,16)},${parseInt(g,16)},${parseInt(b,16)} cluster=${parseInt(cluster,16)}`);
 });
+
+
+// ----- Audio -> MP3 (8 kHz mono) helpers -----
+function floatTo16BitPCM(float32) {
+  const out = new Int16Array(float32.length);
+  for (let i = 0; i < float32.length; i++) {
+    let s = Math.max(-1, Math.min(1, float32[i]));
+    out[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+  }
+  return out;
+}
+function downmixToMono(audioBuffer) {
+  if (audioBuffer.numberOfChannels === 1) return new Float32Array(audioBuffer.getChannelData(0));
+  const len = audioBuffer.length;
+  const out = new Float32Array(len);
+  for (let ch = 0; ch < audioBuffer.numberOfChannels; ch++) {
+    const data = audioBuffer.getChannelData(ch);
+    for (let i = 0; i < len; i++) out[i] += data[i];
+  }
+  const n = audioBuffer.numberOfChannels;
+  for (let i = 0; i < len; i++) out[i] /= n;
+  return out;
+}
+function resampleLinear(src, srcRate, dstRate) {
+  if (srcRate === dstRate) return src;
+  const ratio = srcRate / dstRate;
+  const dstLen = Math.max(1, Math.round(src.length / ratio));
+  const out = new Float32Array(dstLen);
+  for (let i = 0; i < dstLen; i++) {
+    const x = i * ratio;
+    const i0 = Math.floor(x);
+    const i1 = Math.min(i0 + 1, src.length - 1);
+    const t = x - i0;
+    out[i] = (1 - t) * src[i0] + t * src[i1];
+  }
+  return out;
+}
+/** Convert an input File/Blob to MP3 (mono, 8 kHz).
+ *  Returns { u8: Uint8Array, name: string } */
+async function convertFileToDeviceMp3(file, kbps = 32) {
+  if (typeof lamejs === 'undefined' || !lamejs.Mp3Encoder)
+    throw new Error('MP3 encoder library (lamejs) not loaded');
+
+  const buf = await file.arrayBuffer();
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) throw new Error('Web Audio not supported');
+  const ctx = new Ctx(); // decode at native rate
+  const audioBuf = await ctx.decodeAudioData(buf.slice(0));
+  ctx.close?.();
+
+  // mono + resample
+  const mono = downmixToMono(audioBuf);
+  const res = resampleLinear(mono, audioBuf.sampleRate, 8000);
+  const pcm16 = floatTo16BitPCM(res);
+
+  // MP3 encode (1 ch, 8000 Hz, kbps)
+  const enc = new lamejs.Mp3Encoder(1, 8000, kbps|0 || 32);
+  const block = 1152;
+  const parts = [];
+  for (let i = 0; i < pcm16.length; i += block) {
+    const chunk = pcm16.subarray(i, Math.min(i + block, pcm16.length));
+    const d = enc.encodeBuffer(chunk);
+    if (d?.length) parts.push(d);
+  }
+  const end = enc.flush();
+  if (end?.length) parts.push(end);
+
+  const mp3Blob = new Blob(parts, { type: 'audio/mpeg' });
+  const u8 = new Uint8Array(await mp3Blob.arrayBuffer());
+  const outName = (file.name || 'audio').replace(/\.\w+$/i, '') + '.mp3';
+  return { u8, name: outName };
+}
+
+// Show/hide convert option blocks
+$('#chkConvert')?.addEventListener('change', (e)=>{
+  $('#convertOpts')?.classList.toggle('hidden', !e.target.checked);
+});
+$('#edChkConvert')?.addEventListener('change', (e)=>{
+  $('#edConvertOpts')?.classList.toggle('hidden', !e.target.checked);
+});
+
+const SLOW_ACK_KEY = 'skelly_slow_upload_ack';
+
+/** Show the slow-upload modal unless user opted out. Resolves true to proceed. */
+function ensureSlowWarning() {
+  if (localStorage.getItem(SLOW_ACK_KEY) === '1') return Promise.resolve(true);
+  const m = $('#slowModal'); if (!m) return Promise.resolve(true);
+  m.classList.remove('hidden');
+
+  return new Promise((resolve) => {
+    const ok = () => {
+      if ($('#slowDontShow')?.checked) localStorage.setItem(SLOW_ACK_KEY, '1');
+      cleanup(); resolve(true);
+    };
+    const cancel = () => { cleanup(); resolve(false); };
+    const cleanup = () => {
+      $('#slowOk')?.removeEventListener('click', ok);
+      $('#slowCancel')?.removeEventListener('click', cancel);
+      m.classList.add('hidden');
+    };
+    $('#slowOk')?.addEventListener('click', ok);
+    $('#slowCancel')?.addEventListener('click', cancel);
+  });
+}
+
 
 
 })();

@@ -158,6 +158,7 @@
       }
     }
   </style>
+  <script defer src="https://cdn.jsdelivr.net/npm/lamejs@1.2.1/lame.min.js"></script>
 </head>
 <body>
   <!-- First-load warning -->
@@ -172,6 +173,29 @@
       </div>
     </div>
   </div>
+
+  <!-- Slow upload heads-up -->
+  <div id="slowModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="slowTitle">
+    <div class="modal-panel" style="background:#101318;border-color:#273449;color:#e5e7eb;">
+      <h3 id="slowTitle">Heads up: File sending can be slow</h3>
+      <p>
+        Large transfers over Bluetooth can take a while. After the file finishes uploading,
+        the device may take a couple minutes before you see the final “complete” message. 
+        Converting the file can greatly speed up the process.
+      </p>
+      <p class="muted" style="margin-top:6px">
+        Keep this tab focused and avoid disconnecting power during the process.
+      </p>
+      <label class="small" style="display:flex;align-items:center;gap:8px;margin-top:10px;">
+        <input id="slowDontShow" type="checkbox"> Don’t show this again
+      </label>
+      <div class="modal-actions">
+        <button id="slowCancel" class="btn">Cancel</button>
+        <button id="slowOk" class="btn primary">Continue</button>
+      </div>
+    </div>
+</div>
+
 
   <!-- Edit file modal -->
   <div id="editModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="editTitle">
@@ -264,6 +288,19 @@
       <div class="spacer"></div>
       <label>Upload new file (replace)</label>
       <input id="edUploadFile" type="file" />
+      <label class="small" style="margin-top:8px;display:flex;gap:8px;align-items:center">
+        <input id="edChkConvert" type="checkbox">
+        Convert to device format (MP3, 8 kHz mono)
+      </label>
+      <div id="edConvertOpts" class="row hidden" style="align-items:center">
+        <select id="edMp3Kbps" aria-label="MP3 bitrate (edit)">
+          <option value="16">16 kbps</option>
+          <option value="24">24 kbps</option>
+          <option value="32" selected>32 kbps</option>
+        </select>
+        <span class="small muted">Converts input before uploading.</span>
+      </div>
+
       <div class="actions">
         <button class="btn primary" id="edUploadBtn">Upload & Replace</button>
         <span class="small muted" id="edUploadProg">No upload</span>
@@ -369,6 +406,19 @@
         <h2>File Transfer</h2>
         <label>Choose file</label>
         <input id="fileInput" type="file" />
+        <label class="small" style="margin-top:8px;display:flex;gap:8px;align-items:center">
+          <input id="chkConvert" type="checkbox"> Convert to device format (MP3, 8 kHz mono)
+        </label>
+        <div id="convertOpts" class="row hidden" style="align-items:center">
+          <select id="mp3Kbps" aria-label="MP3 bitrate">
+            <option value="16">16 kbps</option>
+            <option value="24">24 kbps</option>
+            <option value="32" selected>32 kbps</option>
+          </select>
+          <span class="small muted">Output replaces selected file before upload.</span>
+        </div>
+
+
         <label>Device filename (UTF-16LE; “5C55” prefix auto)</label>
         <input id="fileName" placeholder="test2_Robot.mp3" />
         <div class="actions">
