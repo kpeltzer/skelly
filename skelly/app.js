@@ -1,0 +1,1044 @@
+(() => {
+  document.body.classList.add('disconnected');
+
+  // --- Config ---
+  const SERVICE_UUID = '0000ae00-0000-1000-8000-00805f9b34fb';
+  const WRITE_UUID   = '0000ae01-0000-1000-8000-00805f9b34fb';
+  const NOTIFY_UUID  = '0000ae02-0000-1000-8000-00805f9b34fb';
+  const ACK_KEY = 'skelly_ack_v2';
+
+    // Long-audio warning
+    const LONG_TRACK_LIMIT_SECONDS = 30;
+    const LONG_TRACK_WARN = 'Uploading a track longer than 30 seconds is experimental, please proceed with caution.';
+
+    /** Get audio duration (in seconds) from a File. Tries <audio> first, falls back to WebAudio. */
+    async function getAudioDurationFromFile(file) {
+    // Fast path: use an off-DOM <audio> to read metadata
+    const viaElement = () => new Promise((resolve, reject) => {
+        const url = URL.createObjectURL(file);
+        const audio = new Audio();
+        audio.preload = 'metadata';
+        audio.onloadedmetadata = () => {
+        const d = audio.duration;
+        URL.revokeObjectURL(url);
+        // Some formats may report Infinity until enough data is loaded
+        if (isFinite(d) && d > 0) resolve(d); else reject(new Error('Non-finite duration'));
+        };
+        audio.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Audio element failed')); };
+        audio.src = url;
+    });
+
+    try {
+        return await viaElement();
+    } catch {
+        // Fallback: decode with Web Audio API
+        try {
+        const buf = await file.arrayBuffer();
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) return null;
+        const ctx = new Ctx();
+        const audioBuf = await ctx.decodeAudioData(buf.slice(0)); // copy for Safari compatibility
+        ctx.close?.();
+        return audioBuf?.duration ?? null;
+        } catch {
+        return null; // Unknown/unsupported type
+        }
+    }
+    }
+
+/** If duration exceeds limit, warn user and log it. */
+function maybeWarnLongTrack(durationSec) {
+  if (durationSec != null && durationSec > LONG_TRACK_LIMIT_SECONDS) {
+    alert(LONG_TRACK_WARN);
+    log(LONG_TRACK_WARN, 'warn');
+  }
+}
+
+
+  // advanced toggles
+  const ADV_KEYS = { raw:'skelly_adv_raw', ft:'skelly_adv_ft', fedc:'skelly_adv_fedc' };
+
+  // --- Padding defaults (bytes) ---
+  const PAD_DEFAULT = 8;
+  const PAD_QUERY   = 8;
+  const PAD_MEDIA   = 8;
+
+  // --- UI helpers ---
+  const $ = sel => document.querySelector(sel);
+  const logEl = $('#log');
+  function log(msg, cls='') {
+    const div = document.createElement('div');
+    div.className = `line ${cls}`;
+    const time = new Date().toLocaleTimeString();
+    div.textContent = `[${time}] ${msg}`;
+    logEl.appendChild(div);
+    const auto = $('#chkAutoscroll');
+    if (!auto || auto.checked) logEl.scrollTop = logEl.scrollHeight;
+  }
+  function setStatus(text) { document.querySelector('#status span').textContent = text; }
+  function setProgress(idx, total) {
+    const pct = total ? Math.round((idx/total)*100) : 0;
+    $('#progText').textContent = `${idx} / ${total}`;
+    $('#progPct').textContent = `${pct}%`;
+    $('#progBar').style.width = `${pct}%`;
+  }
+  $('#btnClearLog')?.addEventListener('click', ()=>{ logEl.innerHTML=''; });
+
+  // --- Warning modal ---
+  const riskModal = $('#riskModal');
+  const showRisk = () => riskModal.classList.remove('hidden');
+  const hideRisk = () => riskModal.classList.add('hidden');
+  window.addEventListener('load', () => { if (!localStorage.getItem(ACK_KEY)) showRisk(); });
+  $('#riskAccept').addEventListener('click', () => { localStorage.setItem(ACK_KEY, '1'); hideRisk(); });
+  $('#riskCancel').addEventListener('click', () => { window.location.href = 'about:blank'; });
+
+  // --- Advanced menu ---
+  const advMenu = $('#advMenu');
+  const advRaw = $('#advRaw');
+  const advFT  = $('#advFT');
+  const advFEDC = $('#advFEDC');
+  const advRawBlock = $('#advRawBlock');
+  const advFTBlock  = $('#advFTBlock');
+
+  function applyAdvVisibility() {
+    advRawBlock.classList.toggle('hidden', !advRaw.checked);
+    advFTBlock.classList.toggle('hidden', !advFT.checked);
+  }
+  function loadAdvState() {
+    advRaw.checked = localStorage.getItem(ADV_KEYS.raw) === '1';
+    advFT.checked  = localStorage.getItem(ADV_KEYS.ft) === '1';
+    advFEDC.checked = localStorage.getItem(ADV_KEYS.fedc) === '1';
+    applyAdvVisibility();
+  }
+  function saveAdvState() {
+    localStorage.setItem(ADV_KEYS.raw, advRaw.checked ? '1':'0');
+    localStorage.setItem(ADV_KEYS.ft,  advFT.checked ? '1':'0');
+    localStorage.setItem(ADV_KEYS.fedc, advFEDC.checked ? '1':'0');
+  }
+  loadAdvState();
+
+  $('#btnAdvanced').addEventListener('click', (e) => {
+    e.stopPropagation();
+    advMenu.classList.toggle('hidden');
+  });
+  document.addEventListener('click', (e)=>{
+    if (!e.target.closest('.menuwrap')) advMenu.classList.add('hidden');
+  });
+  [advRaw, advFT, advFEDC].forEach(el => el.addEventListener('change', ()=>{ saveAdvState(); applyAdvVisibility(); }));
+
+  // --- BLE state ---
+  let device = null, server = null, service = null, writeChar = null, notifyChar = null;
+  const isConnected = () => !!(device && device.gatt && device.gatt.connected && writeChar);
+
+  // --- Waiters (optional) ---
+  const waiters = [];
+  function waitFor(prefix, timeoutMs=4000) {
+    return new Promise((resolve, reject) => {
+      const w = { prefix, resolve, reject, t:setTimeout(()=>{ reject(new Error(`Timeout waiting for ${prefix}`)); }, timeoutMs) };
+      waiters.push(w);
+    });
+  }
+  function handleWaiters(hex) {
+    for (let i=waiters.length-1; i>=0; i--) {
+      if (hex.startsWith(waiters[i].prefix)) {
+        clearTimeout(waiters[i].t);
+        waiters[i].resolve(hex);
+        waiters.splice(i,1);
+      }
+    }
+  }
+
+  // --- CRC8 helpers ---
+  function crc8(bytes) {
+    let crc = 0;
+    for (const b of bytes) {
+      let x = crc ^ b;
+      for (let i=0;i<8;i++) x = (x & 1) ? ((x >>> 1) ^ 0x8C) : (x >>> 1);
+      crc = x & 0xFF;
+    }
+    return crc.toString(16).toUpperCase().padStart(2,'0');
+  }
+  function hexToBytes(hex) {
+    if (!hex) return new Uint8Array();
+    const clean = hex.replace(/\s+/g,'');
+    if (clean.length % 2 !== 0) throw new Error('Hex length must be even');
+    const out = new Uint8Array(clean.length/2);
+    for (let i=0;i<out.length;i++) out[i] = parseInt(clean.substr(i*2,2),16);
+    return out;
+  }
+  const bytesToHex = u8 => Array.from(u8, b=>b.toString(16).toUpperCase().padStart(2,'0')).join('');
+  const intToHex = (n, bytes) => (n>>>0).toString(16).toUpperCase().padStart(bytes*2,'0').slice(-bytes*2);
+  function utf16leHex(str) {
+    if (!str) return '';
+    let hex = '';
+    for (const ch of str) {
+      const cp = ch.codePointAt(0);
+      if (cp <= 0xFFFF) {
+        const lo = cp & 0xFF, hi = (cp >> 8) & 0xFF;
+        hex += lo.toString(16).padStart(2,'0') + hi.toString(16).padStart(2,'0');
+      } else {
+        const v = cp - 0x10000;
+        const hiS = 0xD800 + ((v >> 10) & 0x3FF);
+        const loS = 0xDC00 + (v & 0x3FF);
+        hex += (hiS & 0xFF).toString(16).padStart(2,'0') + ((hiS >> 8) & 0xFF).toString(16).padStart(2,'0');
+        hex += (loS & 0xFF).toString(16).padStart(2,'0') + ((loS >> 8) & 0xFF).toString(16).padStart(2,'0');
+      }
+    }
+    return hex.toUpperCase();
+  }
+  function decodeUtf16le(u8) {
+    let s = '';
+    for (let i=0;i+1<u8.length;i+=2) {
+      const lo = u8[i], hi = u8[i+1];
+      const code = (hi<<8) | lo;
+      if (code === 0) continue;
+      s += String.fromCharCode(code);
+    }
+    return s;
+  }
+
+  function buildCmd(tag, payloadHex = '', minBytes = PAD_DEFAULT) {
+    const p = (payloadHex || '').replace(/\s+/g, '').toUpperCase();
+    const minLen = Math.max(0, (minBytes|0) * 2);
+    const padded = p.length < minLen ? p + '0'.repeat(minLen - p.length) : p;
+    const base = 'AA' + tag.toUpperCase() + padded;
+    const crc = crc8(hexToBytes(base));
+    return hexToBytes(base + crc);
+  }
+
+  // --- Status model ---
+  const status = {
+    deviceName: '',
+    showMode: null,
+    channels: [],
+    btName: '',
+    volume: null,
+    live: { action: null, eye: null },
+    capacity: null,
+    filesReported: null,
+  };
+  let targetsBuiltFromE0 = false;
+
+  function eyeSrc(n) { return `images/icon_eyes_${n}_se.png`; }
+  function eyeImgHTML(n) {
+    const id = Math.max(1, Math.min(18, n|0));
+    const png = eyeSrc(id);
+    const bmp = `images/icon_eyes_${id}_se.bmp`;
+    return `<img class="eye-thumb" src="${png}" onerror="this.onerror=null;this.src='${bmp}'" alt="eye ${id}" />`;
+  }
+  function buildTargetOptions(count = 6) {
+    const sel = $('#targetSelect');
+    if (!sel) return;
+    sel.innerHTML = `<option value="FF">All Channels</option>` +
+      Array.from({length: count}, (_, i) =>
+        `<option value="${intToHex(i+1,1)}">Channel ${i+1}</option>`).join('');
+  }
+  buildTargetOptions(6);
+
+  function currentChannelHex() {
+    return ($('#targetSelect')?.value || 'FF').toUpperCase();
+  }
+
+  function updateStatusUI() {
+    $('#statName') && ($('#statName').textContent = status.deviceName || '—');
+    $('#statShowMode') && ($('#statShowMode').textContent = status.showMode ?? '—');
+    $('#statChannels') && ($('#statChannels').textContent = status.channels.length ? status.channels.join(', ') : '—');
+    $('#statBtName') && ($('#statBtName').textContent = status.btName || '—');
+    if ($('#statVolume')) {
+      const v = status.volume;
+      $('#statVolume').textContent = (v==null) ? '—' : `${v}%`;
+    }
+    $('#statAction') && ($('#statAction').textContent = status.live.action ?? '—');
+
+    if (!targetsBuiltFromE0 && status.channels && status.channels.length) {
+      buildTargetOptions(status.channels.length);
+      targetsBuiltFromE0 = true;
+    }
+
+    if ($('#statCapacity')) {
+      $('#statCapacity').textContent = (status.capacity != null)
+        ? `${status.capacity} KB (${status.filesReported ?? '—'} files)`
+        : '—';
+    }
+    const img = $('#statEye');
+    const txt = $('#statEyeText');
+    if (img && txt) {
+      if (status.live.eye != null) {
+        img.style.display = 'inline-block';
+        img.src = eyeSrc(status.live.eye);
+        img.onerror = () => { img.onerror = null; img.src = `images/icon_eyes_${status.live.eye}_se.bmp`; };
+        txt.textContent = ` ${status.live.eye}`;
+      } else {
+        img.style.display = 'none';
+        txt.textContent = '—';
+      }
+    }
+  }
+
+  async function connect() {
+    try {
+      const nameFilter = $('#nameFilter').value.trim();
+      const options = nameFilter
+        ? { filters:[{ namePrefix: nameFilter }], optionalServices:[SERVICE_UUID] }
+        : { acceptAllDevices:true, optionalServices:[SERVICE_UUID] };
+      device = await navigator.bluetooth.requestDevice(options);
+      device.addEventListener('gattserverdisconnected', onDisconnect);
+      log(`Selected: ${device.name || '(unnamed)'} ${device.id}`, 'warn');
+      server = await device.gatt.connect();
+      service = await server.getPrimaryService(SERVICE_UUID);
+      writeChar = await service.getCharacteristic(WRITE_UUID);
+      notifyChar = await service.getCharacteristic(NOTIFY_UUID);
+      await notifyChar.startNotifications();
+      notifyChar.addEventListener('characteristicvaluechanged', onNotify);
+      $('#btnDisconnect').disabled = false;
+      setStatus('Connected');
+      document.body.classList.remove('disconnected');
+      status.deviceName = device?.name || status.deviceName;
+      updateStatusUI();
+      log('Connected and notifications started', 'warn');
+
+      // Sync like the Android app:
+      startFetchFiles(true);
+    } catch (err) {
+      log('Connect error: ' + err.message, 'warn');
+    }
+  }
+  async function disconnect() {
+    try {
+      if (notifyChar) { try { await notifyChar.stopNotifications(); } catch {}
+        notifyChar.removeEventListener('characteristicvaluechanged', onNotify);
+      }
+      if (device && device.gatt.connected) device.gatt.disconnect();
+    } finally { onDisconnect(); }
+  }
+  function onDisconnect() {
+    document.body.classList.add('disconnected');
+    $('#btnDisconnect').disabled = true;
+    setStatus('Disconnected');
+    log('Disconnected', 'warn');
+    device = server = service = writeChar = notifyChar = null;
+    waiters.splice(0);
+    files.activeFetch = false;
+    clearTimeout(files.timer);
+  }
+
+  async function send(cmdBytes) {
+    if (!isConnected()) { log('Not connected', 'warn'); return; }
+    const hex = bytesToHex(cmdBytes);
+    log('TX ' + hex, 'tx');
+    await writeChar.writeValue(cmdBytes);
+  }
+
+  function onNotify(e) {
+    const v = new Uint8Array(e.target.value.buffer);
+    const hex = bytesToHex(v);
+    log('RX ' + hex, 'rx');
+    try { parseNotify(hex, v); } catch {}
+    try { handleWaiters(hex); } catch {}
+  }
+
+  // --- Files table model ---
+  const files = {
+    expected: null,
+    items: new Map(),
+    activeFetch: false,
+    timer: null,
+    afterCompleteSent: false,
+  };
+  function resetFiles() {
+    files.expected = null;
+    files.items.clear();
+    files.afterCompleteSent = false;
+    updateFilesTable();
+    $('#filesSummary').textContent = '—';
+    clearTimeout(files.timer);
+  }
+  function updateFilesTable() {
+    const tbody = $('#filesTable tbody');
+    tbody.innerHTML = '';
+    const q = ($('#filesFilter')?.value || '').toLowerCase().trim();
+    const rows = Array.from(files.items.values())
+      .filter(it => !q || (it.name||'').toLowerCase().includes(q))
+      .sort((a,b)=>a.serial-b.serial);
+    for (const it of rows) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${it.serial}</td>
+        <td>${it.cluster}</td>
+        <td>${escapeHtml(it.name || '')}</td>
+        <td>${it.attr}</td>
+        <td>${eyeImgHTML(it.eye)}${it.eye ?? ''}</td>
+        <td>${it.db}</td>
+        <td>
+          <button class="btn sm" data-action="play" data-serial="${it.serial}">▶ Play</button>
+          <button class="btn sm" data-action="edit" data-serial="${it.serial}">✏️ Edit</button>
+        </td>`;
+      tbody.appendChild(tr);
+    }
+    const got = rows.length;
+    $('#filesSummary').textContent = `Received ${got}${files.expected?` / ${files.expected}`:''}`;
+  }
+  const escapeHtml = s => s.replace(/[&<>"]/g, c=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+  async function startFetchFiles(triggerChain=false) {
+    if (!isConnected()) { log('Not connected — cannot refresh files.', 'warn'); return; }
+    resetFiles();
+    files.activeFetch = true;
+
+    await send(buildCmd('D0', '', PAD_QUERY));
+
+    files.timer = setTimeout(()=>{
+      if (!files.expected && files.items.size===0) {
+        files.activeFetch = false;
+        log('No file info received (timeout).', 'warn');
+      }
+    }, 6000);
+
+    files.afterCompleteSent = !triggerChain ? true : false;
+  }
+
+  function finalizeFilesIfDone() {
+    if (!files.activeFetch || !files.expected) return;
+    if (files.items.size >= files.expected) {
+      files.activeFetch = false;
+      clearTimeout(files.timer);
+      log('File list complete ✔', 'warn');
+      if (!files.afterCompleteSent) {
+        files.afterCompleteSent = true;
+        send(buildCmd('D1', '', PAD_QUERY));                 // query order
+        setTimeout(()=> send(buildCmd('E1','', PAD_QUERY)), 100);
+        setTimeout(()=> send(buildCmd('E5','', PAD_QUERY)), 200);
+        setTimeout(()=> send(buildCmd('D2','', PAD_QUERY)), 300);
+      }
+    }
+  }
+
+  function parseNotify(hex, bytes) {
+    const starts = (s) => hex.startsWith(s);
+    const getAscii = (hs) => {
+      const clean = hs.replace(/[^0-9A-F]/gi,'');
+      const u8 = hexToBytes(clean);
+      let out = '';
+      for (const b of u8) if (b>=32 && b<=126) out += String.fromCharCode(b);
+      return out.trim();
+    };
+
+    if (starts('FEDC')) {
+      if (advFEDC.checked) log('Keepalive (FEDC)', 'warn');
+      return;
+    }
+
+    if (starts('BBE5')) {
+      const vol = parseInt(hex.slice(4,6),16);
+      status.volume = vol; updateStatusUI();
+      log(`Parsed Volume: ${vol}`);
+    } else if (starts('BBE6')) {
+      const len = parseInt(hex.slice(4,6),16);
+      const nameHex = hex.slice(6, 6+len*2);
+      const btName = getAscii(nameHex);
+      status.btName = btName; updateStatusUI();
+      log(`Parsed Classic BT Name: ${btName}`);
+    } else if (starts('BBE1')) {
+      const action = parseInt(hex.slice(4,6),16);
+      const lightData = hex.slice(6,90);
+      const lights=[];
+      for(let i=0;i<6;i++){
+        const ch = lightData.slice(i*14,(i+1)*14);
+        if (ch.length<14) continue;
+        const light = {
+          chEffect: parseInt(ch.slice(0,2),16),
+          effectGroup: parseInt(ch.slice(2,4),16),
+          r: parseInt(ch.slice(4,6),16),
+          g: parseInt(ch.slice(6,8),16),
+          b: parseInt(ch.slice(8,10),16),
+          brightness: parseInt(ch.slice(10,12),16),
+          channel: parseInt(ch.slice(12,14),16),
+        };
+        lights.push(light);
+      }
+      const eyeIcon = parseInt(hex.slice(90,92),16);
+      status.live.action = action;
+      status.live.eye = eyeIcon;
+      updateStatusUI();
+      log(`Parsed Live: action=${action} eyeIcon=${eyeIcon} lights=${JSON.stringify(lights)}`);
+    } else if (starts('BBE0')) {
+      const channels = [4,6,8,10,12,14].map(i=>parseInt(hex.slice(i,i+2),16));
+      const pin = getAscii(hex.slice(16,24));
+      const wpass = getAscii(hex.slice(24,40));
+      const showMode = parseInt(hex.slice(40,42),16);
+      const nameLen = parseInt(hex.slice(56,58),16);
+      const name = getAscii(hex.slice(58, 58+nameLen*2));
+      status.channels = channels;
+      status.showMode = showMode;
+      status.deviceName = name || status.deviceName;
+      updateStatusUI();
+      log(`Parsed Params: channels=${channels} pin=${pin} wifi=${wpass} showMode=${showMode} name=${name}`);
+    } else if (starts('BBCC')) {
+      const mac = hex.slice(4,16); log(`Parsed Wi-Fi MAC: ${mac}`);
+    } else if (starts('BBC0')) {
+      const failed = parseInt(hex.slice(4,6),16);
+      const written = parseInt(hex.slice(6,14),16);
+      log(`Start Xfer: failed=${failed} written=${written}`);
+    } else if (starts('BBC1')) {
+      const dropped = parseInt(hex.slice(4,6),16);
+      const index = parseInt(hex.slice(6,10),16);
+      log(`Chunk Dropped: ${dropped} @${index}`);
+      if (transfer.inProgress && transfer.chunks.has(index)) {
+        const payload = transfer.chunks.get(index);
+        log(`Resending chunk ${index}`, 'warn');
+        send(buildCmd('C1', payload, 0));
+      }
+    } else if (starts('BBC2')) {
+      const failed = parseInt(hex.slice(4,6),16); log(`End Xfer: failed=${failed}`);
+    } else if (starts('BBC3')) { const failed = parseInt(hex.slice(4,6),16); log(`Rename: failed=${failed}`);
+    } else if (starts('BBC4')) { const failed = parseInt(hex.slice(4,6),16); log(`Cancel: failed=${failed}`);
+    } else if (starts('BBC5')) { const written = parseInt(hex.slice(4,12),16); log(`Resume written=${written}`);
+    } else if (starts('BBC6')) {
+      const serial = parseInt(hex.slice(4,8),16); const playing = !!parseInt(hex.slice(8,10),16); const dur = parseInt(hex.slice(10,14),16); log(`Play/Pause serial=${serial} playing=${playing} duration=${dur}`);
+    } else if (starts('BBC7')) { const ok = parseInt(hex.slice(4,6),16)===0; log(`Delete ${ok?'OK':'FAIL'}`);
+    } else if (starts('BBC8')) { const ok = parseInt(hex.slice(4,6),16); log(`Format ok=${ok}`);
+    } else if (starts('BBD2')) {
+      const capacityKB = parseInt(hex.slice(4,12),16);
+      const count = parseInt(hex.slice(12,14),16);
+      const field4 = parseInt(hex.slice(14,22),16);
+      status.capacity = capacityKB;
+      status.filesReported = count;
+      updateStatusUI();
+      log(`Capacity ${capacityKB}KB filesReported=${count} extra=0x${field4.toString(16).toUpperCase()}`);
+      $('#capLine').textContent = `Remaining capacity: ${capacityKB} KB, files reported: ${count}`;
+    } else if (starts('BBD1')) {
+      let count = parseInt(hex.slice(4,6),16); const data = hex.slice(6);
+      if (data.length < count*4) count = Math.floor(data.length/4);
+      const orders = Array.from({length:count},(_,i)=>parseInt(data.slice(i*4,i*4+4),16));
+      log('Music Order: ' + JSON.stringify(orders));
+    } else if (starts('BBD0')) {
+      const serial = parseInt(hex.slice(4,8),16);
+      const cluster = parseInt(hex.slice(8,16),16);
+      const total   = parseInt(hex.slice(16,20),16);
+      const length  = parseInt(hex.slice(20,24),16);
+      const attr    = parseInt(hex.slice(24,26),16);
+      const eyeIcon = parseInt(hex.slice(110,112),16);
+      const dbPos   = parseInt(hex.slice(112,114),16);
+
+      // Extract filename after 5C55 marker
+      let name = '';
+      const p = hex.indexOf('5C55', 114);
+      if (p >= 0) {
+        const nameHex = hex.slice(p + 4, hex.length - 2);
+        try { name = decodeUtf16le(hexToBytes(nameHex)).trim(); } catch {}
+      }
+
+      files.expected = parseInt(hex.slice(16,20),16) || files.expected;
+      files.items.set(serial, { serial, cluster, total, length, attr, eye: eyeIcon, db: dbPos, name });
+      updateFilesTable();
+      finalizeFilesIfDone();
+    } else {
+      // unhandled
+    }
+  }
+
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+  // Simple ACK wait helper that reuses the existing waiter system
+  function waitForAck(prefix, timeoutMs = 3000) {
+    return waitFor(prefix, timeoutMs).catch(() => null);
+  }
+
+  // Global-ish transfer state
+  const transfer = {
+    inProgress: false,
+    cancel: false,
+    resumeFrom: null, // set by device (e.g., after C2 fail) to resume index
+    chunks: new Map()
+  };
+
+  // (kept if needed later for other ACK types)
+  function handleDeviceAck(hex) {
+    if (!hex) return;
+    const head = hex.slice(0,4).toUpperCase();
+    if (head === 'BBC1') {
+      const isFailed  = parseInt(hex.slice(4,6), 16);
+      if (isFailed === 1) {
+        const lastIndex = parseInt(hex.slice(6,10), 16);
+        transfer.resumeFrom = lastIndex; // device wants this index next
+      }
+    }
+  }
+
+  // --- helper: exact-hex (NO MTU padding) ---
+  function chunkToHex(u8, off, per) {
+    const end = Math.min(off + per, u8.length);
+    const chunk = u8.subarray(off, end);
+    return Array.from(chunk, b => b.toString(16).toUpperCase().padStart(2,'0')).join('');
+  }
+
+  async function sendFileToDevice(u8, name) {
+    if (!isConnected()) { log('Not connected — cannot send file.', 'warn'); return; }
+
+    transfer.inProgress = true;
+    transfer.cancel = false;
+    transfer.chunks.clear();
+    $('#btnSendFile').disabled = true;
+    $('#btnCancelFile').disabled = true;
+    setProgress(0, 0);
+
+    try {
+      // === Prep ===
+      const size = u8.length;
+      // Android uses requestMtu-3 then subtracts 2 more for C1 index -> (512-3-2)=507
+      const per = 500;
+      const maxPack = Math.ceil(size / per);
+      const nameHex = utf16leHex(name);
+
+      // C0 (start)
+      await send(buildCmd('C0', intToHex(size,4) + intToHex(maxPack,2) + '5C55' + nameHex, PAD_DEFAULT));
+
+      // Wait for BBC0 before sending chunks
+      let c0 = await waitForAck('BBC0', 5000);
+      if (!c0) throw new Error('Timeout waiting for BBC0');
+      const c0Failed  = parseInt(c0.slice(4,6),16);
+      const c0Written = parseInt(c0.slice(6,14),16) || 0;
+      if (c0Failed !== 0) throw new Error('Device rejected start (BBC0 failed)');
+      // resume if device reports prior bytes written
+      let startIdx = Math.floor(c0Written / per);
+      if (startIdx > 0) log(`Resuming at chunk index ${startIdx} (written=${c0Written})`, 'warn');
+
+      $('#btnCancelFile').disabled = false;
+
+      // === Data loop (NO MTU padding) ===
+      for (let idx = startIdx; idx < maxPack; idx++) {
+        if (!isConnected()) throw new Error('Disconnected during transfer');
+        if (transfer.cancel) throw new Error('Transfer cancelled');
+
+        if (transfer.resumeFrom !== null) { idx = transfer.resumeFrom; transfer.resumeFrom = null; }
+
+        const off = idx * per;
+        const dataHex = chunkToHex(u8, off, per);   // exact bytes only
+        const payload = intToHex(idx, 2) + dataHex;
+
+        transfer.chunks.set(idx, payload);
+        await send(buildCmd('C1', payload, 0));
+        setProgress(idx + 1, maxPack);
+        await new Promise(r => setTimeout(r, 100));
+      }
+
+      // === C2 (end) — must be 8 zero bytes ===
+      await send(buildCmd('C2', '', 8)); // -> AAC200000000000000004F
+
+      // Wait for BBC2 OK (isFailed==0)
+      let c2 = await waitForAck('BBC2', 240000);  // long timeout for large files
+      if (!c2) throw new Error('Timeout waiting for BBC2');
+      const c2Failed = parseInt(c2.slice(4,6), 16);
+      if (c2Failed !== 0) {
+        // device may include lastIndex after byte 6 if it wants resume
+        const lastIndex = c2.length >= 10 ? parseInt(c2.slice(6,10), 16) : 0;
+        transfer.resumeFrom = lastIndex;
+        // Re-run tail of data if needed
+        let tail = Math.min(maxPack, Math.max(0, transfer.resumeFrom));
+        while (tail < maxPack) {
+          if (transfer.cancel) throw new Error('Transfer cancelled');
+          const payload = transfer.chunks.get(tail);
+          if (!payload) break; // nothing cached
+          await send(buildCmd('C1', payload, 0));
+          tail += 1;
+          setProgress(tail, maxPack);
+          await new Promise(r => setTimeout(r, 12));
+        }
+      }
+
+      // === C3 (rename/commit) ===
+      await send(buildCmd('C3', '5C55' + nameHex, PAD_DEFAULT));
+      const c3 = await waitForAck('BBC3', 3000);
+      if (!c3) throw new Error('Timeout waiting for BBC3');
+      const c3Failed = parseInt(c3.slice(4,6), 16);
+      if (c3Failed !== 0) throw new Error('Device failed final rename');
+
+      log('File transfer complete ✔', 'warn');
+      startFetchFiles(); // refresh
+    } catch (e) {
+      log('File send error: ' + e.message, 'warn');
+    } finally {
+      transfer.inProgress = false;
+      $('#btnSendFile').disabled = false;
+      $('#btnCancelFile').disabled = true;
+    }
+  }
+
+  // --- Wire up controls ---
+  $('#btnConnect').addEventListener('click', connect);
+  $('#btnDisconnect').addEventListener('click', disconnect);
+
+  // quick queries
+  document.querySelectorAll('[data-q]').forEach(btn => btn.addEventListener('click', async () => {
+    if (!isConnected()) return log('Not connected', 'warn');
+    const tag = btn.getAttribute('data-q');
+    await send(buildCmd(tag, '', PAD_QUERY));
+  }));
+
+  // media
+  $('#btnPlay').addEventListener('click', () => { if (!isConnected()) return log('Not connected','warn'); send(buildCmd('FC','01', PAD_MEDIA)); });
+  $('#btnPause').addEventListener('click', () => { if (!isConnected()) return log('Not connected','warn'); send(buildCmd('FC','00', PAD_MEDIA)); });
+  $('#btnBT').addEventListener('click', () => { if (!isConnected()) return log('Not connected','warn'); send(buildCmd('FD','01', PAD_MEDIA)); });
+
+  // volume UI (0–100%) -> wire value (0–255)
+  const clamp = (n,min,max)=>Math.max(min,Math.min(max,Number(n)||0));
+  const volRange = $('#volRange');
+  const volNum = $('#vol');
+
+  if (volRange && volNum) {
+    volRange.addEventListener('input', e => volNum.value = e.target.value);
+    volNum.addEventListener('input', e => volRange.value = clamp(e.target.value,0,100));
+  }
+  $('#btnSetVol').addEventListener('click', () => {
+    if (!isConnected()) return log('Not connected','warn');
+     const v = Math.max(0, Math.min(255, parseInt($('#vol').value || '0', 10)));
+    send(buildCmd('FA', intToHex(v, 1), PAD_MEDIA));
+  });
+
+  // brightness (selected target) with slider sync
+  const briRange = $('#brightnessRange');
+  const briNum = $('#brightness');
+  if (briRange && briNum) {
+    briRange.addEventListener('input', e => briNum.value = e.target.value);
+    briNum.addEventListener('input', e => briRange.value = clamp(e.target.value,0,255));
+  }
+  $('#btnSetBrightness').addEventListener('click', () => {
+    if (!isConnected()) return log('Not connected','warn');
+    const ch = currentChannelHex(); // 'FF' or '01'..'0N'
+    const brightness = intToHex(clamp($('#brightness').value, 0, 255), 1);
+    const cluster = intToHex(0, 4);
+    const nameLen = '00';
+    const payload = ch + brightness + cluster + nameLen; // 7 bytes → padded to 8
+    send(buildCmd('F3', payload, PAD_MEDIA));
+  });
+
+  // color picker sync
+  const colorPick = $('#colorPick');
+  ['r','g','b'].forEach(id => {
+    $('#'+id).addEventListener('input', () => {
+      const r = clamp($('#r').value,0,255);
+      const g = clamp($('#g').value,0,255);
+      const b = clamp($('#b').value,0,255);
+      const hex = `#${intToHex(r,1)}${intToHex(g,1)}${intToHex(b,1)}`.toLowerCase();
+      if (colorPick.value !== hex) colorPick.value = hex;
+    });
+  });
+  if (colorPick) colorPick.addEventListener('input', () => {
+    const v = colorPick.value.replace('#','');
+    if (v.length === 6) {
+      $('#r').value = parseInt(v.slice(0,2),16);
+      $('#g').value = parseInt(v.slice(2,4),16);
+      $('#b').value = parseInt(v.slice(4,6),16);
+    }
+  });
+
+  // quick color swatches
+  document.querySelectorAll('.color-swatch').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const [rr,gg,bb] = btn.dataset.rgb.split(',').map(s=>clamp(s,0,255));
+      $('#r').value = rr; $('#g').value = gg; $('#b').value = bb;
+      const hex = `#${intToHex(rr,1)}${intToHex(gg,1)}${intToHex(bb,1)}`.toLowerCase();
+      if (colorPick) colorPick.value = hex;
+    });
+  });
+
+  // rgb (selected target)
+  $('#btnSetRGB').addEventListener('click', () => {
+    if (!isConnected()) return log('Not connected','warn');
+    const ch = currentChannelHex(); // 'FF' or '01'..'0N'
+    const r = intToHex(clamp($('#r').value,0,255), 1);
+    const g = intToHex(clamp($('#g').value,0,255), 1);
+    const b = intToHex(clamp($('#b').value,0,255), 1);
+    const loop = intToHex(0, 1);
+    const cluster = intToHex(0, 4);
+    const nameLen = '00';
+    const payload = ch + r + g + b + loop + cluster + nameLen; // 10 bytes
+    send(buildCmd('F4', payload, PAD_MEDIA));
+  });
+
+  // filter typing
+  $('#filesFilter')?.addEventListener('input', updateFilesTable);
+
+  // Appearance eye grid
+  let apEye = 1;
+  function buildAppearanceEyeGrid() {
+    const grid = document.querySelector('#apEyeGrid');
+    if (!grid) return;
+    grid.innerHTML = '';
+    for (let i = 1; i <= 18; i++) {
+      const div = document.createElement('div');
+      div.className = 'eye-opt' + (i === apEye ? ' selected' : '');
+      div.dataset.eye = String(i);
+      div.innerHTML = eyeImgHTML(i);
+      div.title = `Eye ${i}`;
+      grid.appendChild(div);
+    }
+  }
+  buildAppearanceEyeGrid();
+
+  document.querySelector('#apEyeGrid')?.addEventListener('click', (e) => {
+    const cell = e.target.closest('.eye-opt');
+    if (!cell) return;
+    apEye = parseInt(cell.dataset.eye, 10);
+    document.querySelectorAll('#apEyeGrid .eye-opt').forEach(el => el.classList.remove('selected'));
+    cell.classList.add('selected');
+  });
+
+  document.querySelector('#apSetEye')?.addEventListener('click', () => {
+    if (!isConnected()) return log('Not connected','warn');
+    const cluster = Math.max(0, parseInt(document.querySelector('#apCluster').value || '0', 10)) >>> 0;
+    const name = (document.querySelector('#apName').value || '').trim();
+    let payload = intToHex(apEye,1) + '00' + intToHex(cluster,4);
+    if (name) {
+      const nameHex = utf16leHex(name);
+      const nameLen = intToHex((nameHex.length/2) + 2, 1);
+      payload += nameLen + '5C55' + nameHex;
+    } else {
+      payload += '00';
+    }
+    send(buildCmd('F9', payload, PAD_DEFAULT));
+    log(`Set Eye (F9) icon=${apEye} cluster=${cluster}${name?` name="${name}"`:''}`);
+  });
+
+  // raw (advanced)
+  $('#btnSendRaw').addEventListener('click', () => {
+    if (!isConnected()) return log('Not connected','warn');
+    const tag = $('#tag').value.trim().toUpperCase();
+    const payload = ($('#payload').value || '').replace(/\s+/g, '').toUpperCase();
+    try { send(buildCmd(tag, payload, PAD_DEFAULT)); } catch (e) { log('Bad payload: ' + e.message, 'warn'); }
+  });
+
+  // File transfer UI (advanced)
+  let lastFileBytes = null, lastFileName = '';
+  $('#fileInput').addEventListener('change', async (e)=>{
+     const f = e.target.files?.[0];
+    if (!f) { lastFileBytes = null; return; }
+
+    // Warn on >30s audio (non-blocking)
+    try {
+        const dur = await getAudioDurationFromFile(f);
+        maybeWarnLongTrack(dur);
+    } catch {}
+
+    // Continue as before
+    const buf = await f.arrayBuffer();
+    lastFileBytes = new Uint8Array(buf);
+    if (!$('#fileName').value) $('#fileName').value = f.name;
+    lastFileName = f.name;
+    setProgress(0,0);
+    log(`Picked file: ${f.name} (${lastFileBytes.length} bytes)`);
+    });
+  $('#btnSendFile').addEventListener('click', async ()=>{
+    if (!isConnected()) return log('Not connected','warn');
+    if (!lastFileBytes) { log('Pick a file first.', 'warn'); return; }
+    const name = ($('#fileName').value || lastFileName || 'skelly.bin').trim();
+    if (!name) { log('Provide a device filename.', 'warn'); return; }
+    await sendFileToDevice(lastFileBytes, name);
+  });
+  $('#btnCancelFile').addEventListener('click', async ()=>{
+    if (!transfer.inProgress) return;
+    transfer.cancel = true;
+    if (isConnected()) { try { await send(buildCmd('C4','', PAD_DEFAULT)); } catch {} }
+  });
+
+  // Files fetch button
+  $('#btnRefreshFiles').addEventListener('click', () => startFetchFiles(false));
+
+  // Files table actions (Play / Edit)
+  $('#filesTable').addEventListener('click', (e)=>{
+    const btn = e.target.closest('button[data-action]');
+    if (!btn) return;
+    if (!isConnected()) return log('Not connected','warn');
+    const serial = parseInt(btn.dataset.serial, 10);
+    const item = files.items.get(serial);
+    if (!item) return;
+
+    if (btn.dataset.action === 'play') {
+      send(buildCmd('C6', intToHex(serial,2) + '01', PAD_DEFAULT));
+    } else if (btn.dataset.action === 'edit') {
+      openEditModal(item);
+    }
+  });
+
+  // ---------- Edit modal ----------
+  const editModal = $('#editModal');
+  const eyeGrid = $('#eyeGrid');
+  const ed = { serial:null, cluster:0, name:'', eye:1 };
+
+  function openEditModal(it) {
+    if (!it) return;
+    ed.serial = it.serial;
+    ed.cluster = it.cluster;
+    ed.name = it.name || '';
+    ed.eye = it.eye || 1;
+
+    $('#edSerial').value = it.serial;
+    $('#edCluster').value = it.cluster;
+    $('#edAction').value = 255;
+    $('#edName').value = it.name || '';
+
+    const edUploadFile = $('#edUploadFile');
+    const edUploadBtn  = $('#edUploadBtn');
+    const edUploadProg = $('#edUploadProg');
+
+    // Warn on long audio when a file is selected in the Edit modal
+    edUploadFile.onchange = async () => {
+    const f = edUploadFile.files?.[0];
+    if (!f) return;
+    try {
+        const dur = await getAudioDurationFromFile(f);
+        maybeWarnLongTrack(dur);
+    } catch {}
+    };
+    
+    edUploadBtn.onclick = async () => {
+      if (!isConnected()) return log('Not connected','warn');
+      const f = edUploadFile.files?.[0];
+      if (!f) return log('Pick a file in the Edit modal first.', 'warn');
+
+      transfer.inProgress = true;
+      transfer.cancel = false;
+      transfer.chunks.clear();
+      edUploadBtn.disabled = true;
+      edUploadProg.textContent = 'Starting...';
+
+      try {
+        const buf = await f.arrayBuffer();
+        const u8 = new Uint8Array(buf);
+        const targetName = ($('#edName').value || f.name).trim();
+        if (!targetName) throw new Error('Filename required');
+
+        const size = u8.length;
+        const per = 500; // match main flow
+        const maxPack = Math.ceil(size / per);
+        const nameHex = utf16leHex(targetName);
+
+        // C0 start + wait for BBC0
+        await send(buildCmd('C0', intToHex(size,4) + intToHex(maxPack,2) + '5C55' + nameHex));
+        let c0 = await waitForAck('BBC0', 5000);
+        if (!c0) throw new Error('Timeout waiting for BBC0');
+        const c0Failed  = parseInt(c0.slice(4,6),16);
+        const c0Written = parseInt(c0.slice(6,14),16) || 0;
+        if (c0Failed !== 0) throw new Error('Device rejected start (BBC0 failed)');
+        let startIdx = Math.floor(c0Written / per);
+        if (startIdx > 0) log(`Resuming at chunk index ${startIdx} (written=${c0Written})`, 'warn');
+
+        // data loop (no MTU padding)
+        for (let idx=startIdx; idx<maxPack; idx++) {
+          if (!isConnected()) throw new Error('Disconnected during upload');
+          if (transfer.cancel) throw new Error('Upload cancelled');
+          const off = idx * per;
+          const dataHex = chunkToHex(u8, off, per);
+          const payload = intToHex(idx,2) + dataHex;
+          transfer.chunks.set(idx, payload);
+          await send(buildCmd('C1', payload, 0));
+          edUploadProg.textContent = `Uploading ${idx+1} / ${maxPack}`;
+          await new Promise(r => setTimeout(r, 12));
+        }
+
+        // C2 end (8 zero bytes) + wait BBC2
+        await send(buildCmd('C2','',8));
+        let c2 = await waitForAck('BBC2', 3000);
+        if (!c2) throw new Error('Timeout waiting for BBC2');
+        const c2Failed = parseInt(c2.slice(4,6),16);
+        if (c2Failed !== 0) throw new Error('Device reported failure on end');
+
+        // C3 rename
+        await send(buildCmd('C3', '5C55' + nameHex));
+        const c3 = await waitForAck('BBC3', 3000);
+        if (!c3) throw new Error('Timeout waiting for BBC3');
+        const c3Failed = parseInt(c3.slice(4,6),16);
+        if (c3Failed !== 0) throw new Error('Device failed final rename');
+
+        edUploadProg.textContent = 'Upload complete ✔';
+        log(`Edit modal upload complete for "${targetName}"`, 'warn');
+        startFetchFiles();
+      } catch (e) {
+        edUploadProg.textContent = 'Upload error';
+        log('Edit upload error: ' + e.message, 'warn');
+      } finally {
+        transfer.inProgress = false;
+        edUploadBtn.disabled = false;
+      }
+    };
+
+    // build eye grid 1..18
+    eyeGrid.innerHTML = '';
+    for (let i = 1; i <= 18; i++) {
+      const div = document.createElement('div');
+      div.className = 'eye-opt' + (i === ed.eye ? ' selected' : '');
+      div.dataset.eye = String(i);
+      div.innerHTML = eyeImgHTML(i);
+      div.title = `Eye ${i}`;
+      eyeGrid.appendChild(div);
+    }
+
+    editModal.classList.remove('hidden');
+  }
+  function closeEditModal() { editModal.classList.add('hidden'); }
+  $('#edClose').addEventListener('click', closeEditModal);
+
+  eyeGrid.addEventListener('click', (e) => {
+    const cell = e.target.closest('.eye-opt');
+    if (!cell) return;
+    ed.eye = parseInt(cell.dataset.eye, 10);
+    eyeGrid.querySelectorAll('.eye-opt').forEach(el => el.classList.remove('selected'));
+    cell.classList.add('selected');
+  });
+
+  // C7: Delete (with confirmation)
+  $('#edDelete').addEventListener('click', ()=>{
+    if (!isConnected()) return log('Not connected','warn');
+    const delName = ($('#edName').value || `serial #${$('#edSerial').value}`);
+    if (!confirm(`Delete "${delName}" from device? This cannot be undone.`)) return;
+    const serial = Math.max(0, parseInt($('#edSerial').value||'0',10));
+    const cluster = Math.max(0, parseInt($('#edCluster').value||'0',10));
+    send(buildCmd('C7', intToHex(serial,2) + intToHex(cluster,4)));
+    log(`Delete request (C7) serial=${serial} cluster=${cluster}`, 'warn');
+    closeEditModal();
+  });
+
+  // F9: Set eye (file metadata)
+  $('#edApplyEye').addEventListener('click', ()=>{
+    if (!isConnected()) return log('Not connected','warn');
+    const cluster = Math.max(0, parseInt($('#edCluster').value||'0',10)) >>> 0;
+    const name = ($('#edName').value || '').trim();
+    let payload = intToHex(ed.eye,1) + '00' + intToHex(cluster,4);
+    if (name) {
+      const nameHex = utf16leHex(name);
+      const nameLen = intToHex((nameHex.length/2) + 2, 1);
+      payload += nameLen + '5C55' + nameHex;
+    } else {
+      payload += '00';
+    }
+    send(buildCmd('F9', payload, PAD_DEFAULT));
+    log(`Set Eye (F9) icon=${ed.eye} cluster=${cluster}${name?` name="${name}"`:''}`);
+  });
+
+  // CA: Set animation
+  $('#edApplyAnim').addEventListener('click', ()=>{
+    if (!isConnected()) return log('Not connected','warn');
+    const action = Math.max(0, Math.min(255, parseInt($('#edAction').value||'255',10)));
+    const cluster = Math.max(0, parseInt($('#edCluster').value||'0',10));
+    const name = ($('#edName').value || '').trim();
+    const nameHex = utf16leHex(name);
+    const nameLen = name ? intToHex((nameHex.length/2)+2, 1) : '00';
+    const payload = intToHex(action,1) + '00' + intToHex(cluster,4) + (name ? nameLen + '5C55' + nameHex : nameLen);
+    send(buildCmd('CA', payload));
+    log(`Set Animation (CA) for "${name}" action=${action} cluster=${cluster}`);
+  });
+
+  // Feature detection
+  if (!('bluetooth' in navigator)) {
+    log('This browser does not support Web Bluetooth. Use Chrome/Edge on desktop or Android over HTTPS.', 'warn');
+  }
+
+  // Text-to-Speech (placeholder)
+  $('#btnSendTTS')?.addEventListener('click', () => {
+    const text = ($('#ttsText').value || '').trim();
+    if (!text) return log('TTS: enter some text first.', 'warn');
+    // TODO: implement protocol to send TTS to device
+    log(`TTS requested: "${text}" (not implemented yet)`, 'warn');
+  });
+
+})();
