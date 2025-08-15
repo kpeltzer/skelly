@@ -6,6 +6,7 @@
   const WRITE_UUID   = '0000ae01-0000-1000-8000-00805f9b34fb';
   const NOTIFY_UUID  = '0000ae02-0000-1000-8000-00805f9b34fb';
   const ACK_KEY = 'skelly_ack_v2';
+  const LONG_WARN_ACK_KEY = 'skelly_long_track_ack';
 
     // Long-audio warning
     const LONG_TRACK_LIMIT_SECONDS = 30;
@@ -46,14 +47,34 @@
     }
     }
 
-/** If duration exceeds limit, warn user and log it. */
-function maybeWarnLongTrack(durationSec) {
+/** If duration exceeds limit, show a dismissible modal once (checkbox to hide in future). */
+async function maybeWarnLongTrack(durationSec) {
   if (durationSec != null && durationSec > LONG_TRACK_LIMIT_SECONDS) {
-    alert(LONG_TRACK_WARN);
-    log(LONG_TRACK_WARN, 'warn');
+    await ensureLongWarning();
+    log(LONG_TRACK_WARN, 'warn'); // keep logging so it’s visible in the Log panel
   }
 }
 
+/** Show the long-audio modal unless the user opted out. Always resolves true. */
+function ensureLongWarning() {
+  if (localStorage.getItem(LONG_WARN_ACK_KEY) === '1') return Promise.resolve(true);
+  const m = $('#longModal');
+  // Fallback to alert if the modal block isn’t in the HTML for some reason
+  if (!m) { alert(LONG_TRACK_WARN); return Promise.resolve(true); }
+
+  m.classList.remove('hidden');
+  return new Promise((resolve) => {
+    const ok = () => {
+      if ($('#longDontShow')?.checked) localStorage.setItem(LONG_WARN_ACK_KEY, '1');
+      cleanup(); resolve(true);
+    };
+    const cleanup = () => {
+      $('#longOk')?.removeEventListener('click', ok);
+      m.classList.add('hidden');
+    };
+    $('#longOk')?.addEventListener('click', ok);
+  });
+}
 
   // advanced toggles
   const ADV_KEYS = { raw:'skelly_adv_raw', ft:'skelly_adv_ft', fedc:'skelly_adv_fedc' };
