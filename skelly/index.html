@@ -34,7 +34,7 @@
       padding:20px;
 
       /* make items in each row the same height */
-      align-items: stretch;           /* was start */
+      align-items: stretch;
     }
     .area-dev{ grid-area:dev; }
     .area-media{ grid-area:media; }
@@ -99,6 +99,14 @@
     #apEyeGrid { grid-template-columns: repeat(7, 36px); gap:8px; justify-content:center; } /* tighter for the Appearance card */
     .eye-opt { border:1px solid #28303a; background:#0f1318; border-radius:8px; padding:4px; display:flex; align-items:center; justify-content:center; cursor:pointer; }
     .eye-opt.selected { outline:2px solid var(--accent); }
+
+    /* Disconnected state: dim + disable most cards except Device and Log */
+    body.disconnected .grid .card { opacity:.6; pointer-events:none; }
+    body.disconnected .area-dev,
+    body.disconnected .area-log { opacity:1; pointer-events:auto; }
+
+    /* Sliders */
+    input[type=range]{ width:100%; }
 
     /* Responsive fallbacks (stack on narrower screens) */
     @media (max-width:1200px){
@@ -213,7 +221,7 @@
       <!-- Raw Command (advanced) -->
       <div class="spacer"></div>
       <div id="advRawBlock" class="hidden">
-        <label>Raw Command (hex after AA+TAG+payload[≤10B]+CRC8 auto)</label>
+        <label>Raw Command (hex after AA+TAG+payload[≤8B]+CRC8 auto)</label>
         <div class="row">
           <select id="tag">
             <option value="E0">E0</option><option value="E1">E1</option><option value="E5">E5</option>
@@ -291,8 +299,9 @@
 
       <div class="spacer"></div>
       <div>
-        <label>Volume (100)</label>
+        <label>Volume (0–100%)</label>
         <div class="row">
+          <input id="volRange" type="range" min="0" max="100" value="50" />
           <input id="vol" type="number" min="0" max="100" value="50" />
           <button class="btn" id="btnSetVol">Set</button>
         </div>
@@ -300,8 +309,9 @@
 
       <div class="spacer"></div>
       <div>
-        <label>Brightness</label>
+        <label>Brightness (0–255)</label>
         <div class="row">
+          <input id="brightnessRange" type="range" min="0" max="255" value="200" />
           <input id="brightness" type="number" min="0" max="255" value="200" />
           <button class="btn" id="btnSetBrightness">Set Brightness</button>
         </div>
@@ -316,6 +326,14 @@
           <input id="g" type="number" min="0" max="255" value="0" />
           <input id="b" type="number" min="0" max="255" value="0" />
           <button class="btn" id="btnSetRGB">Set Color</button>
+        </div>
+        <div class="actions" id="quickColors">
+          <button class="btn xs color-swatch" data-rgb="255,0,0" aria-label="Red">Red</button>
+          <button class="btn xs color-swatch" data-rgb="0,255,0" aria-label="Green">Green</button>
+          <button class="btn xs color-swatch" data-rgb="0,0,255" aria-label="Blue">Blue</button>
+          <button class="btn xs color-swatch" data-rgb="255,255,255" aria-label="White">White</button>
+          <button class="btn xs color-swatch" data-rgb="255,165,0" aria-label="Orange">Orange</button>
+          <button class="btn xs color-swatch" data-rgb="255,105,180" aria-label="Pink">Pink</button>
         </div>
       </div>
 
@@ -337,6 +355,12 @@
     
     <section class="card area-log">
       <h2>Log</h2>
+      <div class="actions">
+        <button class="btn xs" id="btnClearLog">Clear</button>
+        <label class="small" style="display:inline-flex;align-items:center;gap:6px;">
+          <input type="checkbox" id="chkAutoscroll" checked /> Autoscroll
+        </label>
+      </div>
       <div id="log" class="log" aria-live="polite"></div>
       <div class="small muted">Notifications parsed for FEDC/BBE1/E5/E6/E0/CC/C0/C1/C2/C3/C4/C5/C6/C7/C8/D2/D1/D0.</div>
     </section>
@@ -346,6 +370,7 @@
       <div class="actions">
         <button class="btn" id="btnRefreshFiles">Refresh List</button>
         <span class="small muted" id="filesSummary">—</span>
+        <input id="filesFilter" placeholder="Filter by name…" style="max-width:200px" />
       </div>
       <div class="spacer"></div>
       <div class="tablewrap">
@@ -397,6 +422,8 @@
 
 <script>
 (() => {
+  document.body.classList.add('disconnected');
+
   // --- Config ---
   const SERVICE_UUID = '0000ae00-0000-1000-8000-00805f9b34fb';
   const WRITE_UUID   = '0000ae01-0000-1000-8000-00805f9b34fb';
@@ -420,7 +447,8 @@
     const time = new Date().toLocaleTimeString();
     div.textContent = `[${time}] ${msg}`;
     logEl.appendChild(div);
-    logEl.scrollTop = logEl.scrollHeight;
+    const auto = $('#chkAutoscroll');
+    if (!auto || auto.checked) logEl.scrollTop = logEl.scrollHeight;
   }
   function setStatus(text) { document.querySelector('#status span').textContent = text; }
   function setProgress(idx, total) {
@@ -429,6 +457,7 @@
     $('#progPct').textContent = `${pct}%`;
     $('#progBar').style.width = `${pct}%`;
   }
+  $('#btnClearLog')?.addEventListener('click', ()=>{ logEl.innerHTML=''; });
 
   // --- Warning modal ---
   const riskModal = $('#riskModal');
@@ -590,7 +619,10 @@
     $('#statShowMode') && ($('#statShowMode').textContent = status.showMode ?? '—');
     $('#statChannels') && ($('#statChannels').textContent = status.channels.length ? status.channels.join(', ') : '—');
     $('#statBtName') && ($('#statBtName').textContent = status.btName || '—');
-    $('#statVolume') && ($('#statVolume').textContent = status.volume ?? '—');
+    if ($('#statVolume')) {
+      const v = status.volume;
+      $('#statVolume').textContent = (v==null) ? '—' : `${v} (${Math.round(v*100/255)}%)`;
+    }
     $('#statAction') && ($('#statAction').textContent = status.live.action ?? '—');
 
     if (!targetsBuiltFromE0 && status.channels && status.channels.length) {
@@ -635,6 +667,7 @@
       notifyChar.addEventListener('characteristicvaluechanged', onNotify);
       $('#btnDisconnect').disabled = false;
       setStatus('Connected');
+      document.body.classList.remove('disconnected');
       status.deviceName = device?.name || status.deviceName;
       updateStatusUI();
       log('Connected and notifications started', 'warn');
@@ -654,6 +687,7 @@
     } finally { onDisconnect(); }
   }
   function onDisconnect() {
+    document.body.classList.add('disconnected');
     $('#btnDisconnect').disabled = true;
     setStatus('Disconnected');
     log('Disconnected', 'warn');
@@ -697,7 +731,10 @@
   function updateFilesTable() {
     const tbody = $('#filesTable tbody');
     tbody.innerHTML = '';
-    const rows = Array.from(files.items.values()).sort((a,b)=>a.serial-b.serial);
+    const q = ($('#filesFilter')?.value || '').toLowerCase().trim();
+    const rows = Array.from(files.items.values())
+      .filter(it => !q || (it.name||'').toLowerCase().includes(q))
+      .sort((a,b)=>a.serial-b.serial);
     for (const it of rows) {
       const tr = document.createElement('tr');
       tr.innerHTML = `
@@ -875,140 +912,132 @@
     }
   }
 
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-// Simple ACK wait helper that reuses the existing waiter system
-function waitForAck(prefix, timeoutMs = 3000) {
-  return waitFor(prefix, timeoutMs).catch(() => null);
-}
-
-
-// Global-ish transfer state
-const transfer = {
-  inProgress: false,
-  cancel: false,
-  resumeFrom: null, // set by device (e.g., after C2 fail) to resume index
-  chunks: new Map()
-};
-
-// (kept if needed later for other ACK types)
-function handleDeviceAck(hex) {
-  if (!hex) return;
-  const head = hex.slice(0,4).toUpperCase();
-  if (head === 'BBC1') {
-    const isFailed  = parseInt(hex.slice(4,6), 16);
-    if (isFailed === 1) {
-      const lastIndex = parseInt(hex.slice(6,10), 16);
-      transfer.resumeFrom = lastIndex; // device wants this index next
-    }
+  // Simple ACK wait helper that reuses the existing waiter system
+  function waitForAck(prefix, timeoutMs = 3000) {
+    return waitFor(prefix, timeoutMs).catch(() => null);
   }
-}
 
-// --- helper: exact-hex (NO MTU padding) ---
-function chunkToHex(u8, off, per) {
-  const end = Math.min(off + per, u8.length);
-  const chunk = u8.subarray(off, end);
-  return Array.from(chunk, b => b.toString(16).toUpperCase().padStart(2,'0')).join('');
-}
+  // Global-ish transfer state
+  const transfer = {
+    inProgress: false,
+    cancel: false,
+    resumeFrom: null, // set by device (e.g., after C2 fail) to resume index
+    chunks: new Map()
+  };
 
-async function sendFileToDevice(u8, name) {
-  if (!isConnected()) { log('Not connected — cannot send file.', 'warn'); return; }
-
-  transfer.inProgress = true;
-  transfer.cancel = false;
-  transfer.chunks.clear();
-  $('#btnSendFile').disabled = true;
-  $('#btnCancelFile').disabled = true;
-  setProgress(0, 0);
-
-  try {
-    // === Prep ===
-    const size = u8.length;
-    // Android uses requestMtu-3 then subtracts 2 more for C1 index -> (512-3-2)=507
-    const per = 500;
-    const maxPack = Math.ceil(size / per);
-    const nameHex = utf16leHex(name);
-
-    // C0 (start)
-    await send(buildCmd('C0', intToHex(size,4) + intToHex(maxPack,2) + '5C55' + nameHex, PAD_DEFAULT));
-
-    // Wait for BBC0 before sending chunks
-    let c0 = await waitForAck('BBC0', 5000);
-    if (!c0) throw new Error('Timeout waiting for BBC0');
-    const c0Failed  = parseInt(c0.slice(4,6),16);
-    const c0Written = parseInt(c0.slice(6,14),16) || 0;
-    if (c0Failed !== 0) throw new Error('Device rejected start (BBC0 failed)');
-    // resume if device reports prior bytes written
-    let startIdx = Math.floor(c0Written / per);
-    if (startIdx > 0) log(`Resuming at chunk index ${startIdx} (written=${c0Written})`, 'warn');
-
-    $('#btnCancelFile').disabled = false;
-
-    // === Data loop (NO MTU padding) ===
-    for (let idx = startIdx; idx < maxPack; idx++) {
-      if (!isConnected()) throw new Error('Disconnected during transfer');
-      if (transfer.cancel) throw new Error('Transfer cancelled');
-
-      if (transfer.resumeFrom !== null) { idx = transfer.resumeFrom; transfer.resumeFrom = null; }
-
-      const off = idx * per;
-      const dataHex = chunkToHex(u8, off, per);   // exact bytes only
-      const payload = intToHex(idx, 2) + dataHex;
-
-      transfer.chunks.set(idx, payload);
-      await send(buildCmd('C1', payload, 0));
-      setProgress(idx + 1, maxPack);
-      await new Promise(r => setTimeout(r, 100));
-    }
-
-    // === C2 (end) — must be 8 zero bytes ===
-    await send(buildCmd('C2', '', 8)); // -> AAC200000000000000004F
-
-    // Wait for BBC2 OK (isFailed==0)
-    let c2 = await waitForAck('BBC2', 240000);  // HAD TO SET THIS STUPID LONG TIMEOUT FOR LARGE FILES.
-    if (!c2) throw new Error('Timeout waiting for BBC2');
-    const c2Failed = parseInt(c2.slice(4,6), 16);
-    if (c2Failed !== 0) {
-      // device may include lastIndex after byte 6 if it wants resume
-      const lastIndex = c2.length >= 10 ? parseInt(c2.slice(6,10), 16) : 0;
-      transfer.resumeFrom = lastIndex;
-      // Re-run tail of data if needed
-      let tail = Math.min(maxPack, Math.max(0, transfer.resumeFrom));
-      while (tail < maxPack) {
-        if (transfer.cancel) throw new Error('Transfer cancelled');
-        const payload = transfer.chunks.get(tail);
-        if (!payload) break; // nothing cached
-        await send(buildCmd('C1', payload, 0));
-        tail += 1;
-        setProgress(tail, maxPack);
-        await new Promise(r => setTimeout(r, 12));
+  // (kept if needed later for other ACK types)
+  function handleDeviceAck(hex) {
+    if (!hex) return;
+    const head = hex.slice(0,4).toUpperCase();
+    if (head === 'BBC1') {
+      const isFailed  = parseInt(hex.slice(4,6), 16);
+      if (isFailed === 1) {
+        const lastIndex = parseInt(hex.slice(6,10), 16);
+        transfer.resumeFrom = lastIndex; // device wants this index next
       }
-      // send C2 again
-      // await send(buildCmd('C2', '', 8));
-      // c2 = await waitForAck('BBC2', 3000);
-      // if (!c2 || parseInt(c2.slice(4,6), 16) !== 0) {
-      //   throw new Error('Device did not accept C2');
-      // }
     }
-
-    // === C3 (rename/commit) ===
-    await send(buildCmd('C3', '5C55' + nameHex, PAD_DEFAULT));
-    const c3 = await waitForAck('BBC3', 3000);
-    if (!c3) throw new Error('Timeout waiting for BBC3');
-    const c3Failed = parseInt(c3.slice(4,6), 16);
-    if (c3Failed !== 0) throw new Error('Device failed final rename');
-
-    log('File transfer complete ✔', 'warn');
-    startFetchFiles(); // refresh
-  } catch (e) {
-    log('File send error: ' + e.message, 'warn');
-  } finally {
-    transfer.inProgress = false;
-    $('#btnSendFile').disabled = false;
-    $('#btnCancelFile').disabled = true;
   }
-}
 
+  // --- helper: exact-hex (NO MTU padding) ---
+  function chunkToHex(u8, off, per) {
+    const end = Math.min(off + per, u8.length);
+    const chunk = u8.subarray(off, end);
+    return Array.from(chunk, b => b.toString(16).toUpperCase().padStart(2,'0')).join('');
+  }
+
+  async function sendFileToDevice(u8, name) {
+    if (!isConnected()) { log('Not connected — cannot send file.', 'warn'); return; }
+
+    transfer.inProgress = true;
+    transfer.cancel = false;
+    transfer.chunks.clear();
+    $('#btnSendFile').disabled = true;
+    $('#btnCancelFile').disabled = true;
+    setProgress(0, 0);
+
+    try {
+      // === Prep ===
+      const size = u8.length;
+      // Android uses requestMtu-3 then subtracts 2 more for C1 index -> (512-3-2)=507
+      const per = 500;
+      const maxPack = Math.ceil(size / per);
+      const nameHex = utf16leHex(name);
+
+      // C0 (start)
+      await send(buildCmd('C0', intToHex(size,4) + intToHex(maxPack,2) + '5C55' + nameHex, PAD_DEFAULT));
+
+      // Wait for BBC0 before sending chunks
+      let c0 = await waitForAck('BBC0', 5000);
+      if (!c0) throw new Error('Timeout waiting for BBC0');
+      const c0Failed  = parseInt(c0.slice(4,6),16);
+      const c0Written = parseInt(c0.slice(6,14),16) || 0;
+      if (c0Failed !== 0) throw new Error('Device rejected start (BBC0 failed)');
+      // resume if device reports prior bytes written
+      let startIdx = Math.floor(c0Written / per);
+      if (startIdx > 0) log(`Resuming at chunk index ${startIdx} (written=${c0Written})`, 'warn');
+
+      $('#btnCancelFile').disabled = false;
+
+      // === Data loop (NO MTU padding) ===
+      for (let idx = startIdx; idx < maxPack; idx++) {
+        if (!isConnected()) throw new Error('Disconnected during transfer');
+        if (transfer.cancel) throw new Error('Transfer cancelled');
+
+        if (transfer.resumeFrom !== null) { idx = transfer.resumeFrom; transfer.resumeFrom = null; }
+
+        const off = idx * per;
+        const dataHex = chunkToHex(u8, off, per);   // exact bytes only
+        const payload = intToHex(idx, 2) + dataHex;
+
+        transfer.chunks.set(idx, payload);
+        await send(buildCmd('C1', payload, 0));
+        setProgress(idx + 1, maxPack);
+        await new Promise(r => setTimeout(r, 100));
+      }
+
+      // === C2 (end) — must be 8 zero bytes ===
+      await send(buildCmd('C2', '', 8)); // -> AAC200000000000000004F
+
+      // Wait for BBC2 OK (isFailed==0)
+      let c2 = await waitForAck('BBC2', 240000);  // long timeout for large files
+      if (!c2) throw new Error('Timeout waiting for BBC2');
+      const c2Failed = parseInt(c2.slice(4,6), 16);
+      if (c2Failed !== 0) {
+        // device may include lastIndex after byte 6 if it wants resume
+        const lastIndex = c2.length >= 10 ? parseInt(c2.slice(6,10), 16) : 0;
+        transfer.resumeFrom = lastIndex;
+        // Re-run tail of data if needed
+        let tail = Math.min(maxPack, Math.max(0, transfer.resumeFrom));
+        while (tail < maxPack) {
+          if (transfer.cancel) throw new Error('Transfer cancelled');
+          const payload = transfer.chunks.get(tail);
+          if (!payload) break; // nothing cached
+          await send(buildCmd('C1', payload, 0));
+          tail += 1;
+          setProgress(tail, maxPack);
+          await new Promise(r => setTimeout(r, 12));
+        }
+      }
+
+      // === C3 (rename/commit) ===
+      await send(buildCmd('C3', '5C55' + nameHex, PAD_DEFAULT));
+      const c3 = await waitForAck('BBC3', 3000);
+      if (!c3) throw new Error('Timeout waiting for BBC3');
+      const c3Failed = parseInt(c3.slice(4,6), 16);
+      if (c3Failed !== 0) throw new Error('Device failed final rename');
+
+      log('File transfer complete ✔', 'warn');
+      startFetchFiles(); // refresh
+    } catch (e) {
+      log('File send error: ' + e.message, 'warn');
+    } finally {
+      transfer.inProgress = false;
+      $('#btnSendFile').disabled = false;
+      $('#btnCancelFile').disabled = true;
+    }
+  }
 
   // --- Wire up controls ---
   $('#btnConnect').addEventListener('click', connect);
@@ -1026,21 +1055,36 @@ async function sendFileToDevice(u8, name) {
   $('#btnPause').addEventListener('click', () => { if (!isConnected()) return log('Not connected','warn'); send(buildCmd('FC','00', PAD_MEDIA)); });
   $('#btnBT').addEventListener('click', () => { if (!isConnected()) return log('Not connected','warn'); send(buildCmd('FD','01', PAD_MEDIA)); });
 
-  // volume (global)
+  // volume UI (0–100%) -> wire value (0–255)
+  const clamp = (n,min,max)=>Math.max(min,Math.min(max,Number(n)||0));
+  const volRange = $('#volRange');
+  const volNum = $('#vol');
+
+  if (volRange && volNum) {
+    volRange.addEventListener('input', e => volNum.value = e.target.value);
+    volNum.addEventListener('input', e => volRange.value = clamp(e.target.value,0,100));
+  }
   $('#btnSetVol').addEventListener('click', () => {
     if (!isConnected()) return log('Not connected','warn');
-    const v = Math.max(0, Math.min(255, parseInt($('#vol').value || '0', 10)));
-    send(buildCmd('FA', intToHex(v, 1), PAD_MEDIA));
+    const pct = clamp($('#vol').value, 0, 100);
+    const v255 = Math.round(pct * 255 / 100);
+    send(buildCmd('FA', intToHex(v255, 1), PAD_MEDIA));
   });
 
-  // brightness (selected target)
+  // brightness (selected target) with slider sync
+  const briRange = $('#brightnessRange');
+  const briNum = $('#brightness');
+  if (briRange && briNum) {
+    briRange.addEventListener('input', e => briNum.value = e.target.value);
+    briNum.addEventListener('input', e => briRange.value = clamp(e.target.value,0,255));
+  }
   $('#btnSetBrightness').addEventListener('click', () => {
     if (!isConnected()) return log('Not connected','warn');
     const ch = currentChannelHex(); // 'FF' or '01'..'0N'
-    const brightness = intToHex(Math.max(0, Math.min(255, parseInt($('#brightness').value || '0', 10))), 1);
+    const brightness = intToHex(clamp($('#brightness').value, 0, 255), 1);
     const cluster = intToHex(0, 4);
     const nameLen = '00';
-    const payload = ch + brightness + cluster + nameLen; // 7 bytes → pad to 10
+    const payload = ch + brightness + cluster + nameLen; // 7 bytes → padded to 8
     send(buildCmd('F3', payload, PAD_MEDIA));
   });
 
@@ -1048,9 +1092,9 @@ async function sendFileToDevice(u8, name) {
   const colorPick = $('#colorPick');
   ['r','g','b'].forEach(id => {
     $('#'+id).addEventListener('input', () => {
-      const r = Math.max(0, Math.min(255, parseInt($('#r').value||'0',10)));
-      const g = Math.max(0, Math.min(255, parseInt($('#g').value||'0',10)));
-      const b = Math.max(0, Math.min(255, parseInt($('#b').value||'0',10)));
+      const r = clamp($('#r').value,0,255);
+      const g = clamp($('#g').value,0,255);
+      const b = clamp($('#b').value,0,255);
       const hex = `#${intToHex(r,1)}${intToHex(g,1)}${intToHex(b,1)}`.toLowerCase();
       if (colorPick.value !== hex) colorPick.value = hex;
     });
@@ -1064,19 +1108,32 @@ async function sendFileToDevice(u8, name) {
     }
   });
 
+  // quick color swatches
+  document.querySelectorAll('.color-swatch').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const [rr,gg,bb] = btn.dataset.rgb.split(',').map(s=>clamp(s,0,255));
+      $('#r').value = rr; $('#g').value = gg; $('#b').value = bb;
+      const hex = `#${intToHex(rr,1)}${intToHex(gg,1)}${intToHex(bb,1)}`.toLowerCase();
+      if (colorPick) colorPick.value = hex;
+    });
+  });
+
   // rgb (selected target)
   $('#btnSetRGB').addEventListener('click', () => {
     if (!isConnected()) return log('Not connected','warn');
     const ch = currentChannelHex(); // 'FF' or '01'..'0N'
-    const r = intToHex(Math.max(0, Math.min(255, parseInt($('#r').value || '0', 10))), 1);
-    const g = intToHex(Math.max(0, Math.min(255, parseInt($('#g').value || '0', 10))), 1);
-    const b = intToHex(Math.max(0, Math.min(255, parseInt($('#b').value || '0', 10))), 1);
+    const r = intToHex(clamp($('#r').value,0,255), 1);
+    const g = intToHex(clamp($('#g').value,0,255), 1);
+    const b = intToHex(clamp($('#b').value,0,255), 1);
     const loop = intToHex(0, 1);
     const cluster = intToHex(0, 4);
     const nameLen = '00';
     const payload = ch + r + g + b + loop + cluster + nameLen; // 10 bytes
-    send(buildCmd('F4', payload, 10));
+    send(buildCmd('F4', payload, PAD_MEDIA));
   });
+
+  // filter typing
+  $('#filesFilter')?.addEventListener('input', updateFilesTable);
 
   // Appearance eye grid
   let apEye = 1;
@@ -1117,7 +1174,6 @@ async function sendFileToDevice(u8, name) {
     }
     send(buildCmd('F9', payload, PAD_DEFAULT));
     log(`Set Eye (F9) icon=${apEye} cluster=${cluster}${name?` name="${name}"`:''}`);
-    
   });
 
   // raw (advanced)
@@ -1288,9 +1344,11 @@ async function sendFileToDevice(u8, name) {
     cell.classList.add('selected');
   });
 
-  // C7: Delete
+  // C7: Delete (with confirmation)
   $('#edDelete').addEventListener('click', ()=>{
     if (!isConnected()) return log('Not connected','warn');
+    const delName = ($('#edName').value || `serial #${$('#edSerial').value}`);
+    if (!confirm(`Delete "${delName}" from device? This cannot be undone.`)) return;
     const serial = Math.max(0, parseInt($('#edSerial').value||'0',10));
     const cluster = Math.max(0, parseInt($('#edCluster').value||'0',10));
     send(buildCmd('C7', intToHex(serial,2) + intToHex(cluster,4)));
