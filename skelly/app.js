@@ -883,11 +883,6 @@ function initMoveGroup(rootId) {
 
     const map = context === 'live' ? MOV_MAP.live : MOV_MAP.file;
 
-    let lastPickedFile = null;        // original File object from <input>
-    let lastOriginalBytes = null;     // original bytes for the picked file
-    let lastFileBytes = null, lastFileName = '';  // (you already had these)
-
-
     // Determine addressing
     let cluster = 0, name = '';
     if (context === 'file') {

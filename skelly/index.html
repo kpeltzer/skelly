@@ -157,6 +157,82 @@
           "empty";
       }
     }
+
+        /* === Form + checkbox cleanup === */
+    label { line-height: 1.25; }
+    input, select, textarea { font-size: 14px; line-height: 1.2; }
+
+    /* Reusable inline checkbox row */
+    .checkline{
+      display:flex; align-items:center; gap:8px;
+      margin-top: 8px;
+    }
+    .checkline.small { font-size:12px; color:#d1d5db; }
+    .checkline input[type="checkbox"]{
+      width:18px; height:18px; flex:0 0 auto; accent-color: var(--accent);
+      border-radius:4px;
+    }
+    input[type="checkbox"]:focus-visible{
+      outline:2px solid var(--accent); outline-offset:2px;
+    }
+
+    /* Utility margins to replace inline style attributes */
+    .mt-8 { margin-top: 8px; }
+    .mt-10 { margin-top: 10px; }
+    .mt-12 { margin-top: 12px; }
+
+    /* Color inputs a bit bigger for finger tapping */
+    input[type="color"]{
+      width: 44px; height: 36px; padding: 0; border-radius: 8px; border:1px solid #28303a;
+    }
+
+    /* Buttons: consistent touch targets */
+    .btn{ touch-action: manipulation; }
+    @media (pointer:coarse){
+      .btn { padding:12px 14px; border-radius:14px; min-height: 40px; }
+      input, select, textarea { padding:12px 14px; }
+      .iconToggle img { width:48px; height:48px; }
+    }
+
+    /* Rows wrap gracefully on small screens */
+    .row { flex-wrap: wrap; }
+
+    /* Make the log height adaptive (good on phones) */
+    .log { height: clamp(220px, 32vh, 360px); }
+
+    /* Tables: make scroll more obvious on mobile */
+    .tablewrap { -webkit-overflow-scrolling: touch; }
+
+    /* Dropdown menu spacing on mobile */
+    .dropdown label{ display:flex; align-items:center; gap:8px; }
+
+    /* Modals breathe on small screens */
+    .modal-panel { width:min(680px, 94vw); }
+
+    /* Fine-tune the file/appearance grids for phone widths */
+    @media (max-width: 600px){
+      :root{ --col-left: 1fr; --col-mid: 1fr; }
+      .grid{
+        grid-template-columns: 1fr;
+        grid-template-areas:
+          "dev"
+          "media"
+          "appearance"
+          "files"
+          "status"
+          "log";
+      }
+      #apEyeGrid{ grid-template-columns: repeat(6, 36px); }
+    }
+
+    /* Fix checkbox baseline weirdness inside “Advanced” and others */
+    .dropdown input[type="checkbox"],
+    #slowModal input[type="checkbox"],
+    #riskModal input[type="checkbox"]{
+      margin: 0; transform: translateY(0); /* prevents baseline misalignment */
+    }
+
+
   </style>
   <script defer src="https://cdn.jsdelivr.net/npm/lamejs@1.2.1/lame.min.js"></script>
 </head>
@@ -186,7 +262,7 @@
       <p class="muted" style="margin-top:6px">
         Keep this tab focused and avoid disconnecting power during the process.
       </p>
-      <label class="small" style="display:flex;align-items:center;gap:8px;margin-top:10px;">
+      <label class="small checkline mt-10">
         <input id="slowDontShow" type="checkbox"> Don’t show this again
       </label>
       <div class="modal-actions">
@@ -288,7 +364,7 @@
       <div class="spacer"></div>
       <label>Upload new file (replace)</label>
       <input id="edUploadFile" type="file" />
-      <label class="small" style="margin-top:8px;display:flex;gap:8px;align-items:center">
+      <label class="small checkline mt-8">
         <input id="edChkConvert" type="checkbox">
         Convert to device format (MP3, 8 kHz mono)
       </label>
@@ -406,7 +482,7 @@
         <h2>File Transfer</h2>
         <label>Choose file</label>
         <input id="fileInput" type="file" />
-        <label class="small" style="margin-top:8px;display:flex;gap:8px;align-items:center">
+        <label class="small checkline mt-8">
           <input id="chkConvert" type="checkbox"> Convert to device format (MP3, 8 kHz mono)
         </label>
         <div id="convertOpts" class="row hidden" style="align-items:center">
@@ -547,7 +623,7 @@
       <h2>Log</h2>
       <div class="actions">
         <button class="btn xs" id="btnClearLog">Clear</button>
-        <label class="small" style="display:inline-flex;align-items:center;gap:6px;">
+        <label class="small checkline">
           <input type="checkbox" id="chkAutoscroll" checked /> Autoscroll
         </label>
       </div>
