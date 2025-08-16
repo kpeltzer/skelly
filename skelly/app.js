@@ -695,7 +695,7 @@ advEdit?.addEventListener('change', () => {
         transfer.chunks.set(idx, payload);
         await send(buildCmd('C1', payload, 0));
         setProgress(idx + 1, maxPack);
-        await new Promise(r => setTimeout(r, 100));
+        await new Promise(r => setTimeout(r, 50));
       }
 
       // === C2 (end) — must be 8 zero bytes ===
