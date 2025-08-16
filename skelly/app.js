@@ -77,7 +77,7 @@ function ensureLongWarning() {
 }
 
   // advanced toggles
-  const ADV_KEYS = { raw:'skelly_adv_raw', ft:'skelly_adv_ft', fedc:'skelly_adv_fedc' };
+const ADV_KEYS = { raw:'skelly_adv_raw', ft:'skelly_adv_ft', fedc:'skelly_adv_fedc', edit:'skelly_adv_edit' };
 
   // --- Padding defaults (bytes) ---
   const PAD_DEFAULT = 8;
@@ -120,19 +120,36 @@ function ensureLongWarning() {
   const advFEDC = $('#advFEDC');
   const advRawBlock = $('#advRawBlock');
   const advFTBlock  = $('#advFTBlock');
+  const advEdit = $('#advEdit');
 
-  function loadAdvState() {
-    advRaw.checked = localStorage.getItem(ADV_KEYS.raw) === '1';
-    advFT.checked  = localStorage.getItem(ADV_KEYS.ft) === '1';
-    advFEDC.checked = localStorage.getItem(ADV_KEYS.fedc) === '1';
-    applyAdvVisibility();
-  }
-  function saveAdvState() {
-    localStorage.setItem(ADV_KEYS.raw, advRaw.checked ? '1':'0');
-    localStorage.setItem(ADV_KEYS.ft,  advFT.checked ? '1':'0');
-    localStorage.setItem(ADV_KEYS.fedc, advFEDC.checked ? '1':'0');
-  }
+function loadAdvState() {
+  advRaw.checked   = localStorage.getItem(ADV_KEYS.raw)  === '1';
+  advFT.checked    = localStorage.getItem(ADV_KEYS.ft)   === '1';
+  advFEDC.checked  = localStorage.getItem(ADV_KEYS.fedc) === '1';
+  advEdit.checked  = localStorage.getItem(ADV_KEYS.edit) === '1';
+  applyAdvVisibility();
+}
+
+function saveAdvState() {
+  localStorage.setItem(ADV_KEYS.raw,  advRaw.checked  ? '1':'0');
+  localStorage.setItem(ADV_KEYS.ft,   advFT.checked   ? '1':'0');
+  localStorage.setItem(ADV_KEYS.fedc, advFEDC.checked ? '1':'0');
+  localStorage.setItem(ADV_KEYS.edit, advEdit.checked ? '1':'0');
+}
   loadAdvState();
+
+// Warning modal wiring
+const editWarnModal = $('#editWarnModal');
+const showEditWarn  = () => editWarnModal?.classList.remove('hidden');
+const hideEditWarn  = () => editWarnModal?.classList.add('hidden');
+$('#editWarnOk')?.addEventListener('click', hideEditWarn);
+
+// Show popup when enabling Edit; also re-render the table so buttons enable/disable
+advEdit?.addEventListener('change', () => {
+  saveAdvState();
+  updateFilesTable();
+  if (advEdit.checked) showEditWarn();
+});
 
   $('#btnAdvanced').addEventListener('click', (e) => {
     e.stopPropagation();
@@ -382,6 +399,9 @@ function ensureLongWarning() {
     const rows = Array.from(files.items.values())
       .filter(it => !q || (it.name||'').toLowerCase().includes(q))
       .sort((a,b)=>a.serial-b.serial);
+
+    const canEdit = !!(advEdit && advEdit.checked);   // <— toggle state
+
     for (const it of rows) {
       const tr = document.createElement('tr');
       tr.innerHTML = `
@@ -393,7 +413,8 @@ function ensureLongWarning() {
         <td>${it.db}</td>
         <td>
           <button class="btn sm" data-action="play" data-serial="${it.serial}">▶ Play</button>
-          <button class="btn sm" data-action="edit" data-serial="${it.serial}">✏️ Edit</button>
+          <button class="btn sm" data-action="edit" data-serial="${it.serial}"
+            ${canEdit ? '' : 'disabled aria-disabled="true" title="Enable in Advanced ▾ to use"'}>✏️ Edit</button>
         </td>`;
       tbody.appendChild(tr);
     }
@@ -1202,6 +1223,7 @@ $('#fileInput').addEventListener('change', async (e)=>{
     if (btn.dataset.action === 'play') {
       send(buildCmd('C6', intToHex(serial,2) + '01', PAD_DEFAULT));
     } else if (btn.dataset.action === 'edit') {
+      if (btn.disabled || !(advEdit && advEdit.checked)) return; // respect toggle
       openEditModal(item);
     }
   });

@@ -298,6 +298,18 @@
     </div>
   </div>
 
+<!-- Experimental Edit warning -->
+<div id="editWarnModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="editWarnTitle">
+  <div class="modal-panel" style="background:#101318;border-color:#273449;color:#e5e7eb;">
+    <h3 id="editWarnTitle">Experimental feature</h3>
+    <p>Per-file Edit actions are experimental and not all features have been tested. Proceed with caution.</p>
+    <div class="modal-actions">
+      <button id="editWarnOk" class="btn primary">OK</button>
+    </div>
+  </div>
+</div>
+
+
   <!-- Slow upload heads-up -->
   <div id="slowModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="slowTitle">
     <div class="modal-panel" style="background:#101318;border-color:#273449;color:#e5e7eb;">
@@ -466,6 +478,7 @@
           <label><input type="checkbox" id="advRaw"> Show “Raw Command”</label>
           <label><input type="checkbox" id="advFT"> Show “File Transfer”</label>
           <label><input type="checkbox" id="advFEDC"> Show FEDC keepalives</label>
+          <label><input type="checkbox" id="advEdit"> Enable per-file Edit (experimental)</label>
         </div>
       </div>
       <form class="donate" action="https://www.paypal.com/donate" method="post" target="_top" aria-label="Donate">
