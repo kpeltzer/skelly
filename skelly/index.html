@@ -267,6 +267,19 @@
     .subcard-head{ margin-bottom:6px; color:#c7d2fe; }
     .subcard.upcoming{ opacity:.9; }
 
+    footer {
+      display: flex;
+      align-items: center;
+      gap: 12px;              /* spacing between the two spans */
+    }
+
+    footer span:last-child {
+      margin-left: auto;      /* shove the last span to the right */
+      text-align: right;
+    }
+
+    /* optional, keep the link on brand */
+    footer a { color: var(--accent); }
 
   </style>
   <script defer src="https://cdn.jsdelivr.net/npm/lamejs@1.2.1/lame.min.js"></script>
@@ -590,7 +603,7 @@
     <section class="card area-empty">
       <h2>Misc Speech Addons</h2>
       <div class="subcard upcoming" aria-disabled="true">
-          <div class="subcard-head">Text To Speech
+          <div class="subcard-head"><strong>Upcoming:</strong> Text To Speech
         </div>
         <form id="ttsForm" onsubmit="return false;">
         <label for="ttsText">Text</label>
@@ -778,6 +791,10 @@
 
   <footer>
     <span class="muted">Tip: Requires Chrome/Edge (desktop or Android) over HTTPS. Web Bluetooth isn’t supported in Firefox on desktop.</span>
+    <span class="muted"> Source code: 
+  <a href="https://github.com/tinkertims/tinkertims.github.io" target="_blank" rel="noopener">
+    github.com/tinkertims/tinkertims.github.io
+  </a></span>
   </footer>
 
   <!-- Load the app code -->

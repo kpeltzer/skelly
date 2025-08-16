@@ -121,10 +121,6 @@ function ensureLongWarning() {
   const advRawBlock = $('#advRawBlock');
   const advFTBlock  = $('#advFTBlock');
 
-  function applyAdvVisibility() {
-    advRawBlock.classList.toggle('hidden', !advRaw.checked);
-    advFTBlock.classList.toggle('hidden', !advFT.checked);
-  }
   function loadAdvState() {
     advRaw.checked = localStorage.getItem(ADV_KEYS.raw) === '1';
     advFT.checked  = localStorage.getItem(ADV_KEYS.ft) === '1';
@@ -240,15 +236,17 @@ function ensureLongWarning() {
   };
   let targetsBuiltFromE0 = false;
 
-    function eyeSrc(eyeNumber /* device value */) {
-        const imgIdx = EYE_NUM_TO_IMG[eyeNumber] || eyeNumber;
-        return `images/icon_eyes_${imgIdx}_se.png`;
-    }  
-    function eyeImgHTML(eyeNumber /* device value */) {
-        const imgIdx = EYE_NUM_TO_IMG[eyeNumber] || eyeNumber;
-        const png = `images/icon_eyes_${imgIdx}_se.png`;
-        const bmp = `images/icon_eyes_${imgIdx}_se.bmp`;
-        return `<img class="eye-thumb" src="${png}" onerror="this.onerror=null;this.src='${bmp}'" alt="eye ${eyeNumber}" />`;
+    function eyeSrc(eyeNumber) {
+      const map = (typeof EYE_NUM_TO_IMG !== 'undefined') ? EYE_NUM_TO_IMG : {};
+      const imgIdx = map[eyeNumber] || eyeNumber;
+      return `images/icon_eyes_${imgIdx}_se.png`;
+    }
+    function eyeImgHTML(eyeNumber) {
+      const map = (typeof EYE_NUM_TO_IMG !== 'undefined') ? EYE_NUM_TO_IMG : {};
+      const imgIdx = map[eyeNumber] || eyeNumber;
+      const png = `images/icon_eyes_${imgIdx}_se.png`;
+      const bmp = `images/icon_eyes_${imgIdx}_se.bmp`;
+      return `<img class="eye-thumb" src="${png}" onerror="this.onerror=null;this.src='${bmp}'" alt="eye ${eyeNumber}" />`;
     }
   function buildTargetOptions(count = 6) {
     const sel = $('#targetSelect');
@@ -1088,6 +1086,8 @@ document.getElementById('fileName')?.addEventListener('input', () => {
 });
 
   // File transfer UI (advanced)
+let lastPickedFile = null;
+let lastOriginalBytes = null;
 let lastFileBytes = null, lastFileName = '';
 $('#fileInput').addEventListener('change', async (e)=>{
   const f = e.target.files?.[0];
